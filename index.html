@@ -270,7 +270,7 @@ function sectionHasData(def, song) {
     return (song.arrangementRows || []).some((r) => r.section && r.section.trim() || r.notes && r.notes.trim());
   }
   if (def.type === "metronome") {
-    return !!(song.tempo && String(song.tempo).trim());
+    return !!(song.tempo && String(song.tempo).trim() || song.timeSig && String(song.timeSig).trim());
   }
   const v = song[def.id];
   return !!(v && String(v).trim());
@@ -283,7 +283,11 @@ function getContentPreview(def, song) {
   }
   if (def.type === "metronome") {
     const tempo = song.tempo ? String(song.tempo).trim() : "";
-    return tempo ? tempo + " BPM" : "";
+    const timeSig = song.timeSig ? String(song.timeSig).trim() : "";
+    const parts = [];
+    if (tempo) parts.push(tempo + " BPM");
+    if (timeSig) parts.push(timeSig);
+    return parts.join(" \xB7 ");
   }
   if (def.type === "todoList") {
     const items = song[def.id] || [];
@@ -520,7 +524,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.4.1-beta2";
+const APP_VERSION = "2.0.4.1-beta3";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -4782,11 +4786,12 @@ function SongDetail({
       }
       if (def.type === "metronome") {
         const bpmVal = song.tempo == null ? "" : String(song.tempo);
+        const timeSigVal = song.timeSig == null ? "" : String(song.timeSig).trim();
         const isCollapsed2 = collapsed[id] !== false;
         const isRenaming = renamingSectionId === id;
         return /* @__PURE__ */ React.createElement(React.Fragment, { key: id }, emptyDividerEl, /* @__PURE__ */ React.createElement("div", { ref: setRowRef(id), style: { ...styles.atomicSection, ...openMenuFor === id ? { position: "relative", zIndex: 25 } : {}, ...activeDragId === id ? styles.dragging : {} } }, /* @__PURE__ */ React.createElement("div", { style: styles.atomicHeaderRow }, sectionEditMode && /* @__PURE__ */ React.createElement("span", { onPointerDown: startDrag(id), style: styles.atomicDragHandle, "data-swipe-ignore": "true" }, /* @__PURE__ */ React.createElement(Icon, { name: "grip", size: 17, color: "var(--dim)" })), isRenaming ? /* @__PURE__ */ React.createElement("div", { style: { flex: 1, display: "flex", alignItems: "center", gap: 7 } }, isCollapsed2 ? /* @__PURE__ */ React.createElement(Icon, { name: "chevronRight", size: 16, color: "var(--dim)" }) : /* @__PURE__ */ React.createElement(Icon, { name: "chevronDown", size: 16, color: "var(--dim)" }), /* @__PURE__ */ React.createElement("input", { autoFocus: true, value: def.label, onChange: (e) => onRenameSection(id, e.target.value), onBlur: () => setRenamingSectionId(null), onKeyDown: (e) => {
           if (e.key === "Enter") setRenamingSectionId(null);
-        }, style: styles.sectionRenameInput })) : /* @__PURE__ */ React.createElement("button", { onClick: () => setCollapsed((p) => ({ ...p, [id]: p[id] === false })), style: styles.atomicToggle }, isCollapsed2 ? /* @__PURE__ */ React.createElement(Icon, { name: "chevronRight", size: 16, color: "var(--dim)" }) : /* @__PURE__ */ React.createElement(Icon, { name: "chevronDown", size: 16, color: "var(--dim)" }), /* @__PURE__ */ React.createElement("span", { style: { ...styles.atomicLabel, ...!hasData ? styles.atomicLabelEmpty : {} } }, def.label), isCollapsed2 && hasData && /* @__PURE__ */ React.createElement("span", { style: styles.sectionPreview }, bpmVal, " BPM")), /* @__PURE__ */ React.createElement("div", { style: { position: "relative" }, "data-menu-root": true }, /* @__PURE__ */ React.createElement("button", { onClick: () => setOpenMenuFor((cur) => cur === id ? null : id), style: styles.atomicMenuBtn, "aria-label": "Section options" }, /* @__PURE__ */ React.createElement(Icon, { name: "moreHorizontal", size: 15, color: "var(--dim)" })), renderMenu(id, def))), !isCollapsed2 && /* @__PURE__ */ React.createElement("div", { style: { ...styles.atomicContent, paddingLeft: sectionEditMode ? 25 : 4 } }, /* @__PURE__ */ React.createElement(Metronome, { bpm: bpmVal, onSetBpm: (n) => onChange({ tempo: String(n) }) }))));
+        }, style: styles.sectionRenameInput })) : /* @__PURE__ */ React.createElement("button", { onClick: () => setCollapsed((p) => ({ ...p, [id]: p[id] === false })), style: styles.atomicToggle }, isCollapsed2 ? /* @__PURE__ */ React.createElement(Icon, { name: "chevronRight", size: 16, color: "var(--dim)" }) : /* @__PURE__ */ React.createElement(Icon, { name: "chevronDown", size: 16, color: "var(--dim)" }), /* @__PURE__ */ React.createElement("span", { style: { ...styles.atomicLabel, ...!hasData ? styles.atomicLabelEmpty : {} } }, def.label), isCollapsed2 && hasData && /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "baseline", gap: 12, marginLeft: 4 } }, bpmVal && /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "baseline", gap: 4 } }, /* @__PURE__ */ React.createElement("span", { style: { ...styles.metroInput, border: "none", padding: 0, width: "auto", fontSize: 15 } }, bpmVal), /* @__PURE__ */ React.createElement("span", { style: styles.metroUnit }, "BPM")), timeSigVal && /* @__PURE__ */ React.createElement("span", { style: { ...styles.metroInput, border: "none", padding: 0, width: "auto", fontSize: 15 } }, timeSigVal))), /* @__PURE__ */ React.createElement("div", { style: { position: "relative" }, "data-menu-root": true }, /* @__PURE__ */ React.createElement("button", { onClick: () => setOpenMenuFor((cur) => cur === id ? null : id), style: styles.atomicMenuBtn, "aria-label": "Section options" }, /* @__PURE__ */ React.createElement(Icon, { name: "moreHorizontal", size: 15, color: "var(--dim)" })), renderMenu(id, def))), !isCollapsed2 && /* @__PURE__ */ React.createElement("div", { style: { ...styles.atomicContent, paddingLeft: sectionEditMode ? 25 : 4 } }, /* @__PURE__ */ React.createElement(Metronome, { bpm: bpmVal, onSetBpm: (n) => onChange({ tempo: String(n) }) }))));
       }
       if (def.layout === "inline") {
         const value = song[def.id] || "";
