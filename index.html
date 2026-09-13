@@ -519,7 +519,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.4";
+const APP_VERSION = "2.0.4.1-beta1";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -1031,7 +1031,6 @@ function App() {
   const [arrColPct, setArrColPct] = useState(50);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState(false);
-  const [newVersionAvailable, setNewVersionAvailable] = useState(false);
   const [isBeta, setIsBeta] = useState(false);
   const [showViewPicker, setShowViewPicker] = useState(false);
   const [activeTab, setActiveTab] = useState("Setlist");
@@ -1501,9 +1500,6 @@ function App() {
         }
         setSaveState(data.offline ? "offline" : "idle");
         setSyncStatus(data.offline ? "error" : "synced");
-        if (!data.offline && data.version && versionBase(data.version) !== versionBase(APP_VERSION)) {
-          setNewVersionAvailable(true);
-        }
         if (!usedCache) {
           if (snapshot) {
             if (snapshot.activeTab) setActiveTab(snapshot.activeTab);
@@ -1572,7 +1568,6 @@ function App() {
     try {
       const data = await loadAllData();
       if (data.noChange) {
-        if (data.version && versionBase(data.version) !== versionBase(APP_VERSION)) setNewVersionAvailable(true);
         if (data.dataVersion != null) dataVersionRef.current = data.dataVersion;
         reportSyncSuccess();
         setSyncStatus("synced");
@@ -1610,9 +1605,6 @@ function App() {
       );
       setSectionDefs(data.sectionDefs);
       setViews((prev) => data.views && Object.keys(data.views).length ? data.views : prev);
-      if (!data.offline && data.version && versionBase(data.version) !== versionBase(APP_VERSION)) {
-        setNewVersionAvailable(true);
-      }
       if (data.offline) {
         reportSyncFailure();
       } else {
@@ -1662,6 +1654,25 @@ function App() {
   useEffect(() => {
     runSyncCheckRef.current = runSyncCheck;
   });
+  const swRegRef = useRef(null);
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    navigator.serviceWorker.ready.then(function(reg) {
+      swRegRef.current = reg;
+    });
+    if (!navigator.serviceWorker.controller) return;
+    var reloading = false;
+    function onControllerChange() {
+      if (reloading) return;
+      reloading = true;
+      saveReloadSnapshot();
+      forceFullReload();
+    }
+    navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
+    return function() {
+      navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+    };
+  }, []);
   useEffect(() => {
     if (!loaded) return;
     let lastTick = Date.now();
@@ -1671,6 +1682,10 @@ function App() {
       lastTick = now;
       if (gap > AUTO_REFRESH_INTERVAL_MS * 2) retryAllPendingSaves();
       runSyncCheckRef.current();
+      if (swRegRef.current) {
+        swRegRef.current.update().catch(function() {
+        });
+      }
     }, AUTO_REFRESH_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [loaded]);
@@ -2360,7 +2375,7 @@ function App() {
       },
       onClose: () => setShowSetlistEdit(null)
     }
-  ), newVersionAvailable ? /* @__PURE__ */ React.createElement(NewVersionModal, { onBeforeReload: saveReloadSnapshot }) : showViewPicker && views && /* @__PURE__ */ React.createElement(
+  ), showViewPicker && views && /* @__PURE__ */ React.createElement(
     ViewPickerModal,
     {
       views,
@@ -2371,19 +2386,6 @@ function App() {
       }
     }
   ), /* @__PURE__ */ React.createElement(UploadToast, { upload: bgUpload, onRetry: retryBgUpload, onDismiss: dismissBgUpload })));
-}
-function NewVersionModal({ onBeforeReload }) {
-  return /* @__PURE__ */ React.createElement("div", { style: styles.modalBackdrop }, /* @__PURE__ */ React.createElement("div", { style: styles.modalCard }, /* @__PURE__ */ React.createElement("div", { style: styles.modalTitle }, "New version available"), /* @__PURE__ */ React.createElement("div", { style: styles.modalSubtitle }, "This app has been updated. Reload to get the latest version."), /* @__PURE__ */ React.createElement(
-    "button",
-    {
-      onClick: () => {
-        if (onBeforeReload) onBeforeReload();
-        forceFullReload();
-      },
-      style: styles.modalConfirm
-    },
-    "Reload now"
-  )));
 }
 function ViewPickerModal({ views, currentViewId, onPick }) {
   return /* @__PURE__ */ React.createElement("div", { style: styles.modalBackdrop }, /* @__PURE__ */ React.createElement("div", { style: styles.modalCard }, /* @__PURE__ */ React.createElement("div", { style: styles.modalTitle }, "Who's viewing?"), /* @__PURE__ */ React.createElement("div", { style: styles.modalSubtitle }, "Pick your view for this session."), /* @__PURE__ */ React.createElement("div", { style: styles.viewPickerList }, VIEW_IDS.map((vid) => {
