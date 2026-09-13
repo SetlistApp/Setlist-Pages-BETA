@@ -504,6 +504,7 @@ function defaultViews(allIds) {
 const CACHE_KEY = "bandSetlist_cache";
 const PREF_VIEW_KEY = "bandSetlist_activeViewId";
 const PREF_SETLIST_KEY = "bandSetlist_activeSetlistId";
+const PREF_LAST_SEEN_DEFAULT_KEY = "bandSetlist_lastSeenDefaultId";
 const PREF_ARR_COL_KEY = "bandSetlist_arrColPct";
 const RELOAD_SNAPSHOT_KEY = "bandSetlist_reloadSnapshot";
 const RELOAD_SNAPSHOT_MAX_AGE_MS = 6e4;
@@ -519,7 +520,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.4.1-beta1";
+const APP_VERSION = "2.0.4.1-beta2";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -828,10 +829,12 @@ async function saveViewsToSupabase(views) {
 function loadPersonalPrefs() {
   let activeViewId = null;
   let activeSetlistId = null;
+  let lastSeenDefaultId = null;
   let arrColPct = 50;
   try {
     activeViewId = localStorage.getItem(PREF_VIEW_KEY) || null;
     activeSetlistId = localStorage.getItem(PREF_SETLIST_KEY) || null;
+    lastSeenDefaultId = localStorage.getItem(PREF_LAST_SEEN_DEFAULT_KEY) || null;
     const savedPct = localStorage.getItem(PREF_ARR_COL_KEY);
     if (savedPct != null) {
       const n = parseFloat(savedPct);
@@ -839,7 +842,7 @@ function loadPersonalPrefs() {
     }
   } catch (e) {
   }
-  return { activeViewId, activeSetlistId, arrColPct };
+  return { activeViewId, activeSetlistId, lastSeenDefaultId, arrColPct };
 }
 function savePersonalActiveView(vid) {
   try {
@@ -850,6 +853,12 @@ function savePersonalActiveView(vid) {
 function savePersonalActiveSetlist(id) {
   try {
     localStorage.setItem(PREF_SETLIST_KEY, id);
+  } catch (e) {
+  }
+}
+function saveLastSeenDefault(id) {
+  try {
+    localStorage.setItem(PREF_LAST_SEEN_DEFAULT_KEY, id || "");
   } catch (e) {
   }
 }
@@ -1392,10 +1401,17 @@ function App() {
               setSetlists(cSetlists);
               const cDefaultId = cd.defaultSetlistId && cSetlists.some((sl) => sl.id === cd.defaultSetlistId) ? cd.defaultSetlistId : null;
               setDefaultSetlistId(cDefaultId);
-              let asid = prefs.activeSetlistId;
-              if (!asid || !cSetlists.some((sl) => sl.id === asid)) {
-                asid = cDefaultId || (cSetlists.length ? cSetlists[0].id : null);
+              const defaultChanged = cDefaultId && cDefaultId !== prefs.lastSeenDefaultId;
+              let asid;
+              if (defaultChanged) {
+                asid = cDefaultId;
+              } else {
+                asid = prefs.activeSetlistId;
+                if (!asid || !cSetlists.some((sl) => sl.id === asid)) {
+                  asid = cDefaultId || (cSetlists.length ? cSetlists[0].id : null);
+                }
               }
+              if (cDefaultId) saveLastSeenDefault(cDefaultId);
               setActiveSetlistId(asid);
               setSectionDefs(cd.sectionDefs);
               setViews(cd.views);
@@ -1476,15 +1492,29 @@ function App() {
         const loadedDefaultId = data.defaultSetlistId && loadedSetlists.some((sl) => sl.id === data.defaultSetlistId) ? data.defaultSetlistId : null;
         setDefaultSetlistId(loadedDefaultId);
         if (usedCache) {
-          setActiveSetlistId(
-            (cur) => cur && loadedSetlists.some((sl) => sl.id === cur) ? cur : loadedDefaultId || (loadedSetlists[0] ? loadedSetlists[0].id : null)
-          );
+          const defaultChanged = loadedDefaultId && loadedDefaultId !== prefs.lastSeenDefaultId;
+          if (defaultChanged) {
+            setActiveSetlistId(loadedDefaultId);
+            savePersonalActiveSetlist(loadedDefaultId);
+            saveLastSeenDefault(loadedDefaultId);
+          } else {
+            setActiveSetlistId(
+              (cur) => cur && loadedSetlists.some((sl) => sl.id === cur) ? cur : loadedDefaultId || (loadedSetlists[0] ? loadedSetlists[0].id : null)
+            );
+          }
         } else {
-          let asid = prefs.activeSetlistId;
-          if (!asid || !loadedSetlists.some((sl) => sl.id === asid)) {
-            asid = loadedDefaultId || (loadedSetlists.length ? loadedSetlists[0].id : null);
+          const defaultChanged = loadedDefaultId && loadedDefaultId !== prefs.lastSeenDefaultId;
+          let asid;
+          if (defaultChanged) {
+            asid = loadedDefaultId;
+          } else {
+            asid = prefs.activeSetlistId;
+            if (!asid || !loadedSetlists.some((sl) => sl.id === asid)) {
+              asid = loadedDefaultId || (loadedSetlists.length ? loadedSetlists[0].id : null);
+            }
           }
           setActiveSetlistId(asid);
+          if (loadedDefaultId) saveLastSeenDefault(loadedDefaultId);
         }
         setSectionDefs(data.sectionDefs);
         setViews((prev) => usedCache ? data.views && Object.keys(data.views).length ? data.views : prev : data.views);
@@ -1599,10 +1629,18 @@ function App() {
       setSectionOrder(data.sectionOrder);
       setSongOrder(data.songOrder);
       setSetlists(nextSetlists);
-      setDefaultSetlistId(nextDefaultId);
-      setActiveSetlistId(
-        (cur) => cur && nextSetlists.some((sl) => sl.id === cur) ? cur : nextDefaultId || (nextSetlists[0] ? nextSetlists[0].id : null)
-      );
+      setDefaultSetlistId((prevDefaultId) => {
+        if (nextDefaultId && nextDefaultId !== prevDefaultId) {
+          setActiveSetlistId(nextDefaultId);
+          savePersonalActiveSetlist(nextDefaultId);
+          saveLastSeenDefault(nextDefaultId);
+        } else {
+          setActiveSetlistId(
+            (cur) => cur && nextSetlists.some((sl) => sl.id === cur) ? cur : nextDefaultId || (nextSetlists[0] ? nextSetlists[0].id : null)
+          );
+        }
+        return nextDefaultId;
+      });
       setSectionDefs(data.sectionDefs);
       setViews((prev) => data.views && Object.keys(data.views).length ? data.views : prev);
       if (data.offline) {
@@ -2021,6 +2059,9 @@ function App() {
   function setBandDefaultSetlist(id) {
     if (!id || id === defaultSetlistId) return;
     setDefaultSetlistId(id);
+    saveLastSeenDefault(id);
+    setActiveSetlistId(id);
+    savePersonalActiveSetlist(id);
     setDefaultSetlistRemote(id).catch((err) => console.error("setDefaultSetlist failed", err));
   }
   function selectView(vid) {
