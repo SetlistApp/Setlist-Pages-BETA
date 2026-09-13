@@ -524,7 +524,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.4.1-beta3";
+const APP_VERSION = "2.0.4.1-beta4";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -4789,9 +4789,35 @@ function SongDetail({
         const timeSigVal = song.timeSig == null ? "" : String(song.timeSig).trim();
         const isCollapsed2 = collapsed[id] !== false;
         const isRenaming = renamingSectionId === id;
-        return /* @__PURE__ */ React.createElement(React.Fragment, { key: id }, emptyDividerEl, /* @__PURE__ */ React.createElement("div", { ref: setRowRef(id), style: { ...styles.atomicSection, ...openMenuFor === id ? { position: "relative", zIndex: 25 } : {}, ...activeDragId === id ? styles.dragging : {} } }, /* @__PURE__ */ React.createElement("div", { style: styles.atomicHeaderRow }, sectionEditMode && /* @__PURE__ */ React.createElement("span", { onPointerDown: startDrag(id), style: styles.atomicDragHandle, "data-swipe-ignore": "true" }, /* @__PURE__ */ React.createElement(Icon, { name: "grip", size: 17, color: "var(--dim)" })), isRenaming ? /* @__PURE__ */ React.createElement("div", { style: { flex: 1, display: "flex", alignItems: "center", gap: 7 } }, isCollapsed2 ? /* @__PURE__ */ React.createElement(Icon, { name: "chevronRight", size: 16, color: "var(--dim)" }) : /* @__PURE__ */ React.createElement(Icon, { name: "chevronDown", size: 16, color: "var(--dim)" }), /* @__PURE__ */ React.createElement("input", { autoFocus: true, value: def.label, onChange: (e) => onRenameSection(id, e.target.value), onBlur: () => setRenamingSectionId(null), onKeyDown: (e) => {
+        return /* @__PURE__ */ React.createElement(React.Fragment, { key: id }, emptyDividerEl, /* @__PURE__ */ React.createElement("div", { ref: setRowRef(id), style: { ...styles.atomicSection, ...openMenuFor === id ? { position: "relative", zIndex: 25 } : {}, ...activeDragId === id ? styles.dragging : {} } }, /* @__PURE__ */ React.createElement("div", { "data-metro-header": "true", role: "button", onClick: () => setCollapsed((p) => ({ ...p, [id]: p[id] === false })), style: { ...styles.atomicHeaderRow, ...styles.metroHeaderRow } }, sectionEditMode && /* @__PURE__ */ React.createElement("span", { onPointerDown: startDrag(id), onClick: (e) => e.stopPropagation(), style: styles.atomicDragHandle, "data-swipe-ignore": "true" }, /* @__PURE__ */ React.createElement(Icon, { name: "grip", size: 17, color: "var(--dim)" })), isRenaming ? /* @__PURE__ */ React.createElement("div", { style: { flex: 1, display: "flex", alignItems: "center", gap: 7 }, onClick: (e) => e.stopPropagation() }, isCollapsed2 ? /* @__PURE__ */ React.createElement(Icon, { name: "chevronRight", size: 16, color: "var(--dim)" }) : /* @__PURE__ */ React.createElement(Icon, { name: "chevronDown", size: 16, color: "var(--dim)" }), /* @__PURE__ */ React.createElement("input", { autoFocus: true, value: def.label, onChange: (e) => onRenameSection(id, e.target.value), onBlur: () => setRenamingSectionId(null), onKeyDown: (e) => {
           if (e.key === "Enter") setRenamingSectionId(null);
-        }, style: styles.sectionRenameInput })) : /* @__PURE__ */ React.createElement("button", { onClick: () => setCollapsed((p) => ({ ...p, [id]: p[id] === false })), style: styles.atomicToggle }, isCollapsed2 ? /* @__PURE__ */ React.createElement(Icon, { name: "chevronRight", size: 16, color: "var(--dim)" }) : /* @__PURE__ */ React.createElement(Icon, { name: "chevronDown", size: 16, color: "var(--dim)" }), /* @__PURE__ */ React.createElement("span", { style: { ...styles.atomicLabel, ...!hasData ? styles.atomicLabelEmpty : {} } }, def.label), isCollapsed2 && hasData && /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "baseline", gap: 12, marginLeft: 4 } }, bpmVal && /* @__PURE__ */ React.createElement("span", { style: { display: "inline-flex", alignItems: "baseline", gap: 4 } }, /* @__PURE__ */ React.createElement("span", { style: { ...styles.metroInput, border: "none", padding: 0, width: "auto", fontSize: 15 } }, bpmVal), /* @__PURE__ */ React.createElement("span", { style: styles.metroUnit }, "BPM")), timeSigVal && /* @__PURE__ */ React.createElement("span", { style: { ...styles.metroInput, border: "none", padding: 0, width: "auto", fontSize: 15 } }, timeSigVal))), /* @__PURE__ */ React.createElement("div", { style: { position: "relative" }, "data-menu-root": true }, /* @__PURE__ */ React.createElement("button", { onClick: () => setOpenMenuFor((cur) => cur === id ? null : id), style: styles.atomicMenuBtn, "aria-label": "Section options" }, /* @__PURE__ */ React.createElement(Icon, { name: "moreHorizontal", size: 15, color: "var(--dim)" })), renderMenu(id, def))), !isCollapsed2 && /* @__PURE__ */ React.createElement("div", { style: { ...styles.atomicContent, paddingLeft: sectionEditMode ? 25 : 4 } }, /* @__PURE__ */ React.createElement(Metronome, { bpm: bpmVal, onSetBpm: (n) => onChange({ tempo: String(n) }) }))));
+        }, style: styles.sectionRenameInput })) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("span", { style: styles.metroToggle }, isCollapsed2 ? /* @__PURE__ */ React.createElement(Icon, { name: "chevronRight", size: 16, color: "var(--dim)" }) : /* @__PURE__ */ React.createElement(Icon, { name: "chevronDown", size: 16, color: "var(--dim)" }), /* @__PURE__ */ React.createElement("span", { style: { ...styles.metroFieldLabel, ...!hasData ? styles.metroFieldLabelEmpty : {} } }, def.label)), /* @__PURE__ */ React.createElement("div", { style: styles.metroFieldWrap, onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("span", { style: styles.metroField }, /* @__PURE__ */ React.createElement(
+          "input",
+          {
+            value: bpmVal,
+            type: "text",
+            inputMode: "numeric",
+            pattern: "[0-9]*",
+            onChange: (e) => onChange({ tempo: e.target.value.replace(/[^\d]/g, "").slice(0, 3) }),
+            onBlur: (e) => {
+              const n = parseInt(e.target.value, 10);
+              if (!isNaN(n)) onChange({ tempo: String(Math.max(20, Math.min(300, n))) });
+              onFieldBlur();
+            },
+            style: styles.metroInput
+          }
+        ), /* @__PURE__ */ React.createElement("span", { style: styles.metroUnit }, "BPM")), /* @__PURE__ */ React.createElement("span", { style: styles.metroField }, /* @__PURE__ */ React.createElement("span", { style: styles.metroFieldLabel }, "Time Sig"), /* @__PURE__ */ React.createElement(
+          "input",
+          {
+            value: timeSigVal,
+            type: "text",
+            onChange: (e) => onChange({ timeSig: e.target.value }),
+            onBlur: onFieldBlur,
+            spellCheck: false,
+            autoCorrect: "off",
+            style: { ...styles.metroInput, ...styles.metroInputSig }
+          }
+        ))), /* @__PURE__ */ React.createElement("span", { style: { flex: 1 } })), /* @__PURE__ */ React.createElement("div", { style: { position: "relative" }, "data-menu-root": true, onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("button", { onClick: () => setOpenMenuFor((cur) => cur === id ? null : id), style: styles.atomicMenuBtn, "aria-label": "Section options" }, /* @__PURE__ */ React.createElement(Icon, { name: "moreHorizontal", size: 15, color: "var(--dim)" })), renderMenu(id, def))), !isCollapsed2 && /* @__PURE__ */ React.createElement("div", { style: { ...styles.atomicContent, paddingLeft: sectionEditMode ? 25 : 4 } }, /* @__PURE__ */ React.createElement(Metronome, { bpm: bpmVal, onSetBpm: (n) => onChange({ tempo: String(n) }) }))));
       }
       if (def.layout === "inline") {
         const value = song[def.id] || "";
