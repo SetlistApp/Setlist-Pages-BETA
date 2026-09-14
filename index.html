@@ -137,7 +137,6 @@ const SONG_HOME_SECTIONS = ["Set 1", "Set 2", "Not In Show"];
 const VIEW_IDS = ["view1", "view2", "view3", "view4", "view5"];
 const DEFAULT_VIEW_NAMES = ["Alex", "Nick", "Caleb", "Dan", "All"];
 const BUILTIN_SECTION_DEFS = [
-  { id: "quickStats", label: "Stats", type: "quickStats" },
   { id: "key", label: "Key (First Chord)", type: "text", mono: true, layout: "inline" },
   { id: "tempoTimeSig", label: "Metronome", type: "metronome" },
   { id: "arrangement", label: "Arrangement", type: "arrangementTable" },
@@ -263,9 +262,6 @@ function getDotColor(song) {
   return song.dotColor || "var(--dim)";
 }
 function sectionHasData(def, song) {
-  if (def.type === "quickStats") {
-    return !!(song.key && String(song.key).trim() || song.tempo && String(song.tempo).trim() || song.timeSig && String(song.timeSig).trim() || song.features && String(song.features).trim());
-  }
   if (def.type === "arrangementTable") {
     return (song.arrangementRows || []).some((r) => r.section && r.section.trim() || r.notes && r.notes.trim());
   }
@@ -302,7 +298,7 @@ function defaultCollapsedState(song, sectionDefsById) {
   const defaults = {};
   Object.keys(sectionDefsById).forEach((id) => {
     const def = sectionDefsById[id];
-    if (!def || def.layout === "inline" || def.type === "quickStats") return;
+    if (!def || def.layout === "inline") return;
     defaults[id] = def.type === "metronome" ? !(song.tempo != null && String(song.tempo).trim() !== "") : !sectionHasData(def, song);
   });
   return defaults;
@@ -524,7 +520,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.5-beta1";
+const APP_VERSION = "2.0.5-beta2";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -2013,6 +2009,16 @@ function App() {
     const first = slSectionOrder[0];
     persistActiveSetlistSets(setsFromMap({ ...slSongOrder, [first]: [...slSongOrder[first] || [], id] }, slSectionOrder));
   }
+  function moveSongToSet(songId, targetSetName) {
+    const next = {};
+    slSectionOrder.forEach((name) => {
+      next[name] = (slSongOrder[name] || []).filter((x) => x !== songId);
+    });
+    if (targetSetName !== "Not In Show") {
+      next[targetSetName] = [...next[targetSetName] || [], songId];
+    }
+    persistActiveSetlistSets(setsFromMap(next, slSectionOrder));
+  }
   function applySetShape(sets, count, breakMin) {
     const src = Array.isArray(sets) ? sets : [];
     const n = Math.max(1, Math.min(6, Math.round(count || 1)));
@@ -2356,7 +2362,15 @@ function App() {
       onRefresh: handleManualRefresh,
       refreshing,
       manualRefreshing,
-      onBeforeReload: saveReloadSnapshot
+      onBeforeReload: saveReloadSnapshot,
+      setNames: slSectionOrder,
+      songSetName: (() => {
+        for (const name of slSectionOrder) {
+          if ((slSongOrder[name] || []).includes(openSong.id)) return name;
+        }
+        return null;
+      })(),
+      onSetAssignment: (targetSetName) => moveSongToSet(openSong.id, targetSetName)
     }
   ), showSetlistSwitch && /* @__PURE__ */ React.createElement(
     SetlistSwitchSheet,
@@ -4376,7 +4390,10 @@ function SongDetail({
   onRefresh,
   refreshing,
   manualRefreshing,
-  onBeforeReload
+  onBeforeReload,
+  setNames,
+  songSetName,
+  onSetAssignment
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showZoomControl, setShowZoomControl] = useState(false);
@@ -4433,15 +4450,11 @@ function SongDetail({
     }
   }, [song.id]);
   const visibleIds = useMemo(() => {
-    let ids = [...activeView.visibleSections];
-    if (!ids.includes("quickStats")) {
+    let ids = [...activeView.visibleSections].filter((id) => id !== "quickStats");
+    if (!ids.includes("key")) ids.unshift("key");
+    if (!ids.includes("features")) {
       const keyIdx = ids.indexOf("key");
-      if (keyIdx !== -1) {
-        ids[keyIdx] = "quickStats";
-      } else {
-        ids.unshift("quickStats");
-      }
-      ids = ids.filter((id) => id !== "features");
+      ids.splice(keyIdx + 1, 0, "features");
     }
     return ids;
   }, [activeView.visibleSections]);
@@ -4454,7 +4467,7 @@ function SongDetail({
     const set = /* @__PURE__ */ new Set();
     localOrder.forEach((id) => {
       const def = sectionDefsById[id];
-      if (def && def.type !== "quickStats" && !sectionHasData(def, song)) set.add(id);
+      if (def && !sectionHasData(def, song)) set.add(id);
     });
     return set;
   }, [localOrder, sectionDefsById, song]);
@@ -4664,28 +4677,6 @@ function SongDetail({
       const isLinksList = def.type === "linksList";
       const isTodoList = def.type === "todoList";
       const todoArrForInline = isTodoList ? song[def.id] || [] : null;
-      if (def.type === "quickStats") {
-        const keyVal = song.key || "";
-        const bpmVal = song.tempo == null ? "" : String(song.tempo);
-        const sigVal = song.timeSig == null ? "" : String(song.timeSig);
-        const featVal = song.features || "";
-        return /* @__PURE__ */ React.createElement("div", { key: id, ref: setRowRef(id), style: { ...styles.quickStatsRow, ...openMenuFor === id ? { position: "relative", zIndex: 25 } : {}, ...activeDragId === id ? styles.dragging : {} } }, sectionEditMode && /* @__PURE__ */ React.createElement("span", { onPointerDown: startDrag(id), style: styles.atomicDragHandle, "data-swipe-ignore": "true" }, /* @__PURE__ */ React.createElement(Icon, { name: "grip", size: 15, color: "var(--dim)" })), /* @__PURE__ */ React.createElement("div", { style: styles.quickStatsGrid }, /* @__PURE__ */ React.createElement("div", { style: styles.quickStatCell }, /* @__PURE__ */ React.createElement("input", { value: keyVal, onChange: (e) => onChange({ key: e.target.value }), onBlur: onFieldBlur, spellCheck: false, autoCorrect: "off", autoCapitalize: "off", style: { ...styles.quickStatInput, color: "var(--gold)" } }), /* @__PURE__ */ React.createElement("span", { style: styles.quickStatLabel }, "KEY")), /* @__PURE__ */ React.createElement("div", { style: styles.quickStatDivider }), /* @__PURE__ */ React.createElement("div", { style: styles.quickStatCell }, /* @__PURE__ */ React.createElement(
-          "input",
-          {
-            value: bpmVal,
-            type: "text",
-            inputMode: "numeric",
-            pattern: "[0-9]*",
-            onChange: (e) => onChange({ tempo: e.target.value.replace(/[^\d]/g, "").slice(0, 3) }),
-            onBlur: (e) => {
-              const n = parseInt(e.target.value, 10);
-              if (!isNaN(n)) onChange({ tempo: String(Math.max(20, Math.min(300, n))) });
-              onFieldBlur();
-            },
-            style: styles.quickStatInput
-          }
-        ), /* @__PURE__ */ React.createElement("span", { style: styles.quickStatLabel }, "BPM")), /* @__PURE__ */ React.createElement("div", { style: styles.quickStatDivider }), /* @__PURE__ */ React.createElement("div", { style: styles.quickStatCell }, /* @__PURE__ */ React.createElement("input", { value: sigVal, type: "text", onChange: (e) => onChange({ timeSig: e.target.value }), onBlur: onFieldBlur, spellCheck: false, autoCorrect: "off", style: styles.quickStatInput }), /* @__PURE__ */ React.createElement("span", { style: styles.quickStatLabel }, "TIME")), featVal ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: styles.quickStatDivider }), /* @__PURE__ */ React.createElement("div", { style: { ...styles.quickStatCell, flex: 1.3 } }, /* @__PURE__ */ React.createElement("input", { value: featVal, onChange: (e) => onChange({ features: e.target.value }), onBlur: onFieldBlur, spellCheck: false, autoCorrect: "off", style: { ...styles.quickStatInput, fontFamily: "var(--display)", fontSize: 14, fontWeight: 600 } }), /* @__PURE__ */ React.createElement("span", { style: styles.quickStatLabel }, "FEAT."))) : null));
-      }
       const emptyDividerEl = showEmptyDivider ? /* @__PURE__ */ React.createElement("div", { key: "__empty_divider", style: styles.emptyDivider }, /* @__PURE__ */ React.createElement("span", { style: styles.emptyDividerText }, "Empty")) : null;
       if (isTodoList && todoArrForInline.length === 0) {
         return /* @__PURE__ */ React.createElement(React.Fragment, { key: id }, emptyDividerEl, /* @__PURE__ */ React.createElement("div", { ref: setRowRef(id), style: { ...styles.atomicInlineRow, ...openMenuFor === id ? { position: "relative", zIndex: 25 } : {}, ...activeDragId === id ? styles.dragging : {} } }, sectionEditMode && /* @__PURE__ */ React.createElement("span", { onPointerDown: startDrag(id), style: styles.atomicDragHandle, "data-swipe-ignore": "true" }, /* @__PURE__ */ React.createElement(Icon, { name: "grip", size: 15, color: "var(--dim)" })), renamingSectionId === id ? /* @__PURE__ */ React.createElement(
@@ -4852,7 +4843,22 @@ function SongDetail({
           style: styles.sectionRenameInput
         }
       )) : /* @__PURE__ */ React.createElement("button", { onClick: () => setCollapsed((p) => ({ ...p, [id]: !p[id] })), style: styles.atomicToggle }, isCollapsed ? /* @__PURE__ */ React.createElement(Icon, { name: "chevronRight", size: 16, color: "var(--dim)" }) : /* @__PURE__ */ React.createElement(Icon, { name: "chevronDown", size: 16, color: "var(--dim)" }), /* @__PURE__ */ React.createElement("span", { style: { ...styles.atomicLabel, ...!hasData ? styles.atomicLabelEmpty : {} } }, def.label), previewText && /* @__PURE__ */ React.createElement("span", { style: styles.sectionPreview }, previewText)), /* @__PURE__ */ React.createElement("div", { style: { position: "relative" }, "data-menu-root": true }, /* @__PURE__ */ React.createElement("button", { onClick: () => setOpenMenuFor((cur) => cur === id ? null : id), style: styles.atomicMenuBtn, "aria-label": "Section options" }, /* @__PURE__ */ React.createElement(Icon, { name: "moreHorizontal", size: 15, color: "var(--dim)" })), renderMenu(id, def))), !isCollapsed && /* @__PURE__ */ React.createElement("div", { style: { ...styles.atomicContent, paddingLeft: sectionEditMode ? 25 : 4 } }, renderSectionContent(def, song, onChange, arrColPct, onArrColPctChange, arrEditMode, onFieldBlur))));
-    })), hiddenSections.length > 0 && activeTab === "overview" && /* @__PURE__ */ React.createElement("div", { style: styles.addSectionWrap }, /* @__PURE__ */ React.createElement("button", { onClick: () => setShowHidden((v) => !v), style: styles.addSectionBtn }, showHidden ? "Hide list" : `Show hidden sections (${hiddenSections.length})`), showHidden && /* @__PURE__ */ React.createElement("div", { style: styles.hiddenChipRow }, hiddenSections.map((id) => /* @__PURE__ */ React.createElement("button", { key: id, onClick: () => onShowSection(id), style: styles.hiddenChip }, "+ ", sectionDefsById[id]?.label))))),
+    })), activeTab === "overview" && setNames && setNames.length > 0 && /* @__PURE__ */ React.createElement("div", { style: styles.setAssignWrap }, setNames.map((name) => /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key: name,
+        onClick: () => onSetAssignment(name),
+        style: { ...styles.setAssignChip, ...songSetName === name ? styles.setAssignChipActive : {} }
+      },
+      name
+    )), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => onSetAssignment("Not In Show"),
+        style: { ...styles.setAssignChip, ...songSetName === null ? styles.setAssignChipActive : {} }
+      },
+      "Not In Show"
+    )), hiddenSections.length > 0 && activeTab === "overview" && /* @__PURE__ */ React.createElement("div", { style: styles.addSectionWrap }, /* @__PURE__ */ React.createElement("button", { onClick: () => setShowHidden((v) => !v), style: styles.addSectionBtn }, showHidden ? "Hide list" : `Show hidden sections (${hiddenSections.length})`), showHidden && /* @__PURE__ */ React.createElement("div", { style: styles.hiddenChipRow }, hiddenSections.map((id) => /* @__PURE__ */ React.createElement("button", { key: id, onClick: () => onShowSection(id), style: styles.hiddenChip }, "+ ", sectionDefsById[id]?.label))))),
     showAddSection && /* @__PURE__ */ React.createElement(
       AddSectionModal,
       {
@@ -5035,13 +5041,10 @@ const rawStyles = {
   atomicMenuBtn: { background: "none", border: "none", cursor: "pointer", padding: 10, margin: -6, flexShrink: 0, opacity: 0.65 },
   atomicContent: { padding: "0 2px 8px 4px" },
   atomicInlineRow: { display: "flex", alignItems: "center", gap: 3, padding: "7px 0", borderBottom: "1px solid var(--line)" },
-  // Quick Stats bar — Key | BPM | Time Sig | Featured Artist
-  quickStatsRow: { display: "flex", alignItems: "center", gap: 3, background: "var(--surface)", borderBottom: "1px solid var(--line)" },
-  quickStatsGrid: { flex: 1, display: "flex", gap: 0, minWidth: 0 },
-  quickStatDivider: { width: 1, alignSelf: "stretch", background: "var(--line)" },
-  quickStatCell: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 0, minWidth: 0, padding: "7px 4px 5px" },
-  quickStatLabel: { fontFamily: "var(--display)", fontWeight: 600, fontSize: 7.5, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--dim)", marginTop: 2 },
-  quickStatInput: { background: "transparent", border: "none", borderBottom: "2px solid transparent", color: "var(--text)", fontFamily: "'JetBrains Mono', monospace", fontWeight: 600, fontSize: 17, padding: "0 0 2px", width: "auto", minWidth: 24, textAlign: "center", maxWidth: "100%" },
+  // Set assignment control
+  setAssignWrap: { padding: "12px 4px 8px", display: "flex", gap: 6, flexWrap: "wrap" },
+  setAssignChip: { flex: 1, minWidth: 0, padding: "8px 4px", borderRadius: 8, border: "1.5px solid var(--line)", background: "transparent", color: "var(--dim)", fontFamily: "var(--display)", fontWeight: 600, fontSize: 13, textAlign: "center", cursor: "pointer", transition: "all 0.15s", WebkitTapHighlightColor: "transparent" },
+  setAssignChipActive: { border: "1.5px solid var(--gold)", background: "rgba(227,168,59,0.12)", color: "var(--gold)" },
   // Section content preview (collapsed)
   sectionPreview: { fontFamily: "var(--body)", fontWeight: 400, fontSize: 13, color: "var(--dim)", opacity: 0.55, marginLeft: 8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 },
   // Empty section auto-sort
