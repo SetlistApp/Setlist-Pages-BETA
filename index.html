@@ -520,7 +520,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.5-beta3";
+const APP_VERSION = "2.0.5-beta4";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -4790,7 +4790,7 @@ function SongDetail({
             },
             style: styles.metroInput
           }
-        ), /* @__PURE__ */ React.createElement("span", { style: styles.metroUnit }, "BPM")), /* @__PURE__ */ React.createElement("span", { style: styles.metroField }, /* @__PURE__ */ React.createElement("span", { style: styles.metroFieldLabel }, "Time Sig"), /* @__PURE__ */ React.createElement(
+        ), /* @__PURE__ */ React.createElement("span", { style: styles.metroUnit }, "BPM")), /* @__PURE__ */ React.createElement("span", { style: styles.metroField }, /* @__PURE__ */ React.createElement("span", { style: { ...styles.metroFieldLabel, ...!timeSigVal ? styles.metroFieldLabelEmpty : {} } }, "Time Sig"), /* @__PURE__ */ React.createElement(
           "input",
           {
             value: timeSigVal,
