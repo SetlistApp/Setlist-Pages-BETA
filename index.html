@@ -520,7 +520,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.5-beta2";
+const APP_VERSION = "2.0.5-beta3";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -5050,7 +5050,7 @@ const rawStyles = {
   // Empty section auto-sort
   emptyDivider: { padding: "10px 0 4px", display: "flex", alignItems: "center", gap: 8 },
   emptyDividerText: { fontFamily: "var(--display)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--dim)", opacity: 0.5 },
-  atomicLabelInline: { fontFamily: "var(--display)", fontWeight: 600, fontSize: 16.5, color: "var(--text)", whiteSpace: "nowrap", flexShrink: 0 },
+  atomicLabelInline: { fontFamily: "var(--display)", fontWeight: 600, fontSize: 16.5, color: "var(--text)", whiteSpace: "nowrap", flexShrink: 0, minWidth: 160 },
   inlineInput: { flex: 1, minWidth: 0, background: "transparent", border: "none", color: "var(--text)", fontSize: 16.5, padding: "4px 2px" },
   // Metronome section — header row (chevron + Tempo/Time Sig values, always editable)
   // The whole row is the collapse toggle; this just adds the affordance.
