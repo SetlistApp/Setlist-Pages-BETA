@@ -521,7 +521,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.5-beta5";
+const APP_VERSION = "2.0.5-beta6";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -740,6 +740,7 @@ async function loadAllDataFromSupabase() {
     sectionDefs: configMap.sectionDefs || [],
     views: configMap.views || {},
     tags: configMap.tags || ["Original"],
+    originalsOrder: configMap.originalsOrder || [],
     version: APP_VERSION,
     dataVersion: null,
     // not used with Supabase — full reads are fast enough
@@ -832,6 +833,14 @@ async function saveTagsToSupabase(tags) {
   var client = getSupabaseClient();
   var res = await client.from("config").upsert(
     { key: "tags", value: tags },
+    { onConflict: "key" }
+  );
+  if (res.error) throw new Error(res.error.message);
+}
+async function saveOriginalsOrderToSupabase(order) {
+  var client = getSupabaseClient();
+  var res = await client.from("config").upsert(
+    { key: "originalsOrder", value: order },
     { onConflict: "key" }
   );
   if (res.error) throw new Error(res.error.message);
@@ -1042,6 +1051,7 @@ function App() {
   const [sectionDefs, setSectionDefs] = useState(null);
   const [views, setViews] = useState(null);
   const [knownTags, setKnownTags] = useState(["Original"]);
+  const [originalsOrder, setOriginalsOrder] = useState([]);
   const [activeViewId, setActiveViewId] = useState("view5");
   const [showTodoScreen, setShowTodoScreen] = useState(false);
   const [driveReview, setDriveReview] = useState({ duplicates: [], ambiguous: [], unmatched: [], applied: 0, alreadyLinked: 0 });
@@ -1425,6 +1435,7 @@ function App() {
               setActiveSetlistId(asid);
               setSectionDefs(cd.sectionDefs);
               if (cd.tags) setKnownTags(cd.tags);
+              if (cd.originalsOrder) setOriginalsOrder(cd.originalsOrder);
               setViews(cd.views);
               let avid = prefs.activeViewId;
               const hasStoredView = !!(prefs.activeViewId && cd.views[prefs.activeViewId]);
@@ -1529,6 +1540,7 @@ function App() {
         }
         setSectionDefs(data.sectionDefs);
         if (data.tags) setKnownTags(data.tags);
+        if (data.originalsOrder) setOriginalsOrder(data.originalsOrder);
         setViews((prev) => usedCache ? data.views && Object.keys(data.views).length ? data.views : prev : data.views);
         if (!usedCache) {
           let avid = prefs.activeViewId;
@@ -1655,6 +1667,7 @@ function App() {
       });
       setSectionDefs(data.sectionDefs);
       if (data.tags) setKnownTags(data.tags);
+      if (data.originalsOrder) setOriginalsOrder(data.originalsOrder);
       setViews((prev) => data.views && Object.keys(data.views).length ? data.views : prev);
       if (data.offline) {
         reportSyncFailure();
@@ -2167,7 +2180,13 @@ function App() {
       return ids;
     }
     if (activeTab === "Not In Show") return notInShowIds;
-    if (activeTab === "Originals") return songs.filter((s) => (s.tags || []).includes("Original")).sort((a, b) => a.title.localeCompare(b.title, void 0, { sensitivity: "base" })).map((s) => s.id);
+    if (activeTab === "Originals") {
+      const tagged = new Set(songs.filter((s) => (s.tags || []).includes("Original")).map((s) => s.id));
+      const kept = (originalsOrder || []).filter((id) => tagged.has(id));
+      const keptSet = new Set(kept);
+      const newIds = [...tagged].filter((id) => !keptSet.has(id));
+      return [...kept, ...newIds];
+    }
     return [...songs].sort((a, b) => a.title.localeCompare(b.title, void 0, { sensitivity: "base" })).map((s) => s.id);
   }, [songs, query, searchResults, activeTab, slSectionOrder, slSongOrder, notInShowIds]);
   const sectionDefsById = useMemo(() => sectionDefs ? Object.fromEntries(sectionDefs.map((d) => [d.id, d])) : {}, [sectionDefs]);
@@ -2343,7 +2362,10 @@ function App() {
       hasSetlist: !!activeSetlist,
       noScrollWrapper: true
     }
-  )) : activeTab === "Not In Show" ? /* @__PURE__ */ React.createElement(NotInShowView, { songs, order: notInShowIds, onOpen: setOpenId, onAdd: addSongToActiveSetlist }) : activeTab === "Originals" ? /* @__PURE__ */ React.createElement(OriginalsView, { songs, onOpen: setOpenId }) : /* @__PURE__ */ React.createElement(AllSongsView, { songs, onOpen: setOpenId }), /* @__PURE__ */ React.createElement("button", { onClick: addSong, style: styles.fab, "aria-label": "Add song" }, /* @__PURE__ */ React.createElement(Icon, { name: "plus", size: 24, color: "var(--bg)" })), openSong && /* @__PURE__ */ React.createElement(
+  )) : activeTab === "Not In Show" ? /* @__PURE__ */ React.createElement(NotInShowView, { songs, order: notInShowIds, onOpen: setOpenId, onAdd: addSongToActiveSetlist }) : activeTab === "Originals" ? /* @__PURE__ */ React.createElement(OriginalsView, { songs, onOpen: setOpenId, order: originalsOrder, onReorderCommit: (newOrder) => {
+    setOriginalsOrder(newOrder);
+    supabaseCall("saveOriginalsOrder", () => saveOriginalsOrderToSupabase(newOrder));
+  } }) : /* @__PURE__ */ React.createElement(AllSongsView, { songs, onOpen: setOpenId }), /* @__PURE__ */ React.createElement("button", { onClick: addSong, style: styles.fab, "aria-label": "Add song" }, /* @__PURE__ */ React.createElement(Icon, { name: "plus", size: 24, color: "var(--bg)" })), openSong && /* @__PURE__ */ React.createElement(
     SongDetail,
     {
       song: openSong,
@@ -2879,12 +2901,63 @@ function AllSongsView({ songs, onOpen }) {
   const sorted = useMemo(() => [...songs].sort((a, b) => a.title.localeCompare(b.title, void 0, { sensitivity: "base" })), [songs]);
   return /* @__PURE__ */ React.createElement("div", { style: styles.list }, sorted.map((s) => /* @__PURE__ */ React.createElement("button", { key: s.id, onClick: () => onOpen(s.id), style: styles.row }, /* @__PURE__ */ React.createElement("span", { style: { ...styles.dot, background: getDotColor(s) } }), /* @__PURE__ */ React.createElement(SongTitleAndFeatures, { song: s }))), sorted.length === 0 && /* @__PURE__ */ React.createElement("div", { style: styles.emptyState }, /* @__PURE__ */ React.createElement(Icon, { name: "music", size: 26, color: "var(--line)" }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, "No songs yet.")));
 }
-function OriginalsView({ songs, onOpen }) {
-  const sorted = useMemo(
-    () => songs.filter((s) => (s.tags || []).includes("Original")).sort((a, b) => a.title.localeCompare(b.title, void 0, { sensitivity: "base" })),
-    [songs]
-  );
-  return /* @__PURE__ */ React.createElement("div", { style: styles.list }, sorted.map((s) => /* @__PURE__ */ React.createElement("button", { key: s.id, onClick: () => onOpen(s.id), style: styles.row }, /* @__PURE__ */ React.createElement("span", { style: { ...styles.dot, background: getDotColor(s) } }), /* @__PURE__ */ React.createElement(SongTitleAndFeatures, { song: s }))), sorted.length === 0 && /* @__PURE__ */ React.createElement("div", { style: styles.emptyState }, /* @__PURE__ */ React.createElement(Icon, { name: "music", size: 26, color: "var(--line)" }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, "No songs tagged as originals yet.")));
+function OriginalsView({ songs, onOpen, order, onReorderCommit }) {
+  const songsById = useMemo(() => Object.fromEntries(songs.map((s) => [s.id, s])), [songs]);
+  const orderedIds = useMemo(() => {
+    const tagged = new Set(songs.filter((s) => (s.tags || []).includes("Original")).map((s) => s.id));
+    const kept = (order || []).filter((id) => tagged.has(id));
+    const keptSet = new Set(kept);
+    const newIds = [...tagged].filter((id) => !keptSet.has(id)).sort((a, b) => (songsById[a]?.title || "").localeCompare(songsById[b]?.title || "", void 0, { sensitivity: "base" }));
+    return [...kept, ...newIds];
+  }, [songs, order, songsById]);
+  const [localOrder, setLocalOrder] = useState(orderedIds);
+  const localOrderRef = useRef(orderedIds);
+  const draggingRef = useRef(null);
+  const rowRefs = useRef({});
+  const [activeDragId, setActiveDragId] = useState(null);
+  const [editMode, setEditMode] = useState(false);
+  useEffect(() => {
+    if (!draggingRef.current) {
+      setLocalOrder(orderedIds);
+      localOrderRef.current = orderedIds;
+    }
+  }, [orderedIds]);
+  const setRowRef = (key) => (el) => {
+    if (el) rowRefs.current[key] = el;
+    else delete rowRefs.current[key];
+  };
+  function handlePointerMove(e) {
+    if (!draggingRef.current) return;
+    const tokens = localOrderRef.current.map((id) => "song:" + id);
+    const next = computeNewOrder("song:" + draggingRef.current.id, e.clientY, tokens, rowRefs);
+    const newOrder = next.map((t) => t.slice(5));
+    localOrderRef.current = newOrder;
+    setLocalOrder(newOrder);
+  }
+  function handlePointerUp() {
+    if (!draggingRef.current) return;
+    draggingRef.current = null;
+    setActiveDragId(null);
+    document.body.style.userSelect = "";
+    window.removeEventListener("pointermove", handlePointerMove);
+    window.removeEventListener("pointerup", handlePointerUp);
+    onReorderCommit(localOrderRef.current);
+  }
+  function startDrag(id) {
+    return (e) => {
+      e.preventDefault();
+      draggingRef.current = { id };
+      setActiveDragId("song:" + id);
+      document.body.style.userSelect = "none";
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", handlePointerUp);
+    };
+  }
+  return /* @__PURE__ */ React.createElement("div", { style: styles.list }, localOrder.length > 0 && /* @__PURE__ */ React.createElement("div", { style: styles.sectionDivider }, /* @__PURE__ */ React.createElement("span", { style: styles.sectionDividerLabel }, "Originals"), /* @__PURE__ */ React.createElement("span", { style: styles.sectionDividerCount }, localOrder.length), /* @__PURE__ */ React.createElement("div", { style: { position: "relative" }, "data-menu-root": true }, /* @__PURE__ */ React.createElement("button", { onClick: () => setEditMode((v) => !v), style: styles.atomicMenuBtn, "aria-label": "Edit order" }, /* @__PURE__ */ React.createElement(Icon, { name: editMode ? "check" : "moreHorizontal", size: 16, color: "var(--dim)" })))), localOrder.map((id) => {
+    const s = songsById[id];
+    if (!s) return null;
+    return /* @__PURE__ */ React.createElement("div", { key: id, ref: setRowRef("song:" + id), style: { ...styles.dragRow, ...activeDragId === "song:" + id ? styles.dragging : {} } }, editMode && /* @__PURE__ */ React.createElement("span", { onPointerDown: startDrag(id), style: styles.dragHandle }, /* @__PURE__ */ React.createElement(Icon, { name: "grip", size: 16, color: "var(--dim)" })), /* @__PURE__ */ React.createElement("button", { onClick: () => onOpen(id), style: styles.rowMain }, /* @__PURE__ */ React.createElement("span", { style: { ...styles.dot, background: getDotColor(s) } }), /* @__PURE__ */ React.createElement(SongTitleAndFeatures, { song: s })));
+  }), localOrder.length === 0 && /* @__PURE__ */ React.createElement("div", { style: styles.emptyState }, /* @__PURE__ */ React.createElement(Icon, { name: "music", size: 26, color: "var(--line)" }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, "No songs tagged as originals yet.")));
 }
 function SearchResultsList({ songs, onOpen }) {
   return /* @__PURE__ */ React.createElement("div", { style: styles.list }, songs.map((s) => /* @__PURE__ */ React.createElement("button", { key: s.id, onClick: () => onOpen(s.id), style: styles.row }, /* @__PURE__ */ React.createElement("span", { style: { ...styles.dot, background: getDotColor(s) } }), /* @__PURE__ */ React.createElement(SongTitleAndFeatures, { song: s }))), songs.length === 0 && /* @__PURE__ */ React.createElement("div", { style: styles.emptyState }, /* @__PURE__ */ React.createElement(Icon, { name: "music", size: 26, color: "var(--line)" }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, "No songs match your search.")));
