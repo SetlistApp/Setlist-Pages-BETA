@@ -524,7 +524,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.4.1";
+const APP_VERSION = "2.0.4.2";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
