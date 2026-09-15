@@ -809,11 +809,6 @@ async function saveSongPatchToSupabase(patch, viewerName) {
   });
   if (changes.length > 0) {
     logChanges("song", id, songTitle, viewerName, changes);
-    if (_onSongChangeCommitted) {
-      changes.forEach(function(c) {
-        _onSongChangeCommitted({ songId: id, songTitle, field: c.field, oldValue: c.oldValue, newValue: c.newValue });
-      });
-    }
   }
 }
 async function deleteOneSongFromSupabase(id) {
@@ -890,7 +885,6 @@ async function saveOriginalsOrderToSupabase(order) {
   );
   if (res.error) throw new Error(res.error.message);
 }
-var _onSongChangeCommitted = null;
 const CHANGE_LOG_MAX_VALUE_BYTES = 1024;
 const CHANGE_LOG_RETENTION_DAYS = 7;
 function truncateForLog(val) {
@@ -1195,7 +1189,7 @@ function App() {
   const redoStackRef = useRef([]);
   const [undoLen, setUndoLen] = useState(0);
   const [redoLen, setRedoLen] = useState(0);
-  const skipCommitCountRef = useRef(0);
+  const isUndoRedoRef = useRef(false);
   const [driveFolderUrl, setDriveFolderUrl] = useState("");
   const [arrColPct, setArrColPct] = useState(50);
   const [loaded, setLoaded] = useState(false);
@@ -2093,24 +2087,25 @@ function App() {
     viewsSaveTimer.current = setTimeout(attemptViewsSave, 300);
   }
   function updateSong(id, patch) {
+    if (!isUndoRedoRef.current) {
+      var currentSong = songsRef.current && songsRef.current.find(function(s) {
+        return s.id === id;
+      });
+      if (currentSong) {
+        for (var k in patch) {
+          if (k === "id") continue;
+          if (JSON.stringify(currentSong[k]) !== JSON.stringify(patch[k])) {
+            undoStackRef.current = undoStackRef.current.concat({ songId: id, field: k, oldValue: currentSong[k], newValue: patch[k] });
+          }
+        }
+        redoStackRef.current = [];
+        setUndoLen(undoStackRef.current.length);
+        setRedoLen(0);
+      }
+    }
     setSongs((prev) => prev.map((s) => s.id === id ? { ...s, ...patch } : s));
     scheduleSongSave(id, patch);
   }
-  useEffect(function() {
-    _onSongChangeCommitted = function(entry) {
-      if (skipCommitCountRef.current > 0) {
-        skipCommitCountRef.current -= 1;
-        return;
-      }
-      undoStackRef.current = undoStackRef.current.concat(entry);
-      redoStackRef.current = [];
-      setUndoLen(undoStackRef.current.length);
-      setRedoLen(0);
-    };
-    return function() {
-      _onSongChangeCommitted = null;
-    };
-  }, []);
   function performUndo() {
     if (undoStackRef.current.length === 0) return;
     var entry = undoStackRef.current[undoStackRef.current.length - 1];
@@ -2118,8 +2113,9 @@ function App() {
     redoStackRef.current = redoStackRef.current.concat(entry);
     setUndoLen(undoStackRef.current.length);
     setRedoLen(redoStackRef.current.length);
-    skipCommitCountRef.current += 1;
+    isUndoRedoRef.current = true;
     updateSong(entry.songId, Object.fromEntries([[entry.field, entry.oldValue]]));
+    isUndoRedoRef.current = false;
   }
   function performRedo() {
     if (redoStackRef.current.length === 0) return;
@@ -2128,8 +2124,9 @@ function App() {
     undoStackRef.current = undoStackRef.current.concat(entry);
     setUndoLen(undoStackRef.current.length);
     setRedoLen(redoStackRef.current.length);
-    skipCommitCountRef.current += 1;
+    isUndoRedoRef.current = true;
     updateSong(entry.songId, Object.fromEntries([[entry.field, entry.newValue]]));
+    isUndoRedoRef.current = false;
   }
   const songsById = useMemo(() => songs ? Object.fromEntries(songs.map((s) => [s.id, s])) : {}, [songs]);
   const activeSetlist = useMemo(
