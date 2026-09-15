@@ -1195,7 +1195,7 @@ function App() {
   const redoStackRef = useRef([]);
   const [undoLen, setUndoLen] = useState(0);
   const [redoLen, setRedoLen] = useState(0);
-  const isUndoRedoRef = useRef(false);
+  const skipCommitCountRef = useRef(0);
   const [driveFolderUrl, setDriveFolderUrl] = useState("");
   const [arrColPct, setArrColPct] = useState(50);
   const [loaded, setLoaded] = useState(false);
@@ -2098,7 +2098,10 @@ function App() {
   }
   useEffect(function() {
     _onSongChangeCommitted = function(entry) {
-      if (isUndoRedoRef.current) return;
+      if (skipCommitCountRef.current > 0) {
+        skipCommitCountRef.current -= 1;
+        return;
+      }
       undoStackRef.current = undoStackRef.current.concat(entry);
       redoStackRef.current = [];
       setUndoLen(undoStackRef.current.length);
@@ -2115,11 +2118,8 @@ function App() {
     redoStackRef.current = redoStackRef.current.concat(entry);
     setUndoLen(undoStackRef.current.length);
     setRedoLen(redoStackRef.current.length);
-    isUndoRedoRef.current = true;
+    skipCommitCountRef.current += 1;
     updateSong(entry.songId, Object.fromEntries([[entry.field, entry.oldValue]]));
-    setTimeout(function() {
-      isUndoRedoRef.current = false;
-    }, 0);
   }
   function performRedo() {
     if (redoStackRef.current.length === 0) return;
@@ -2128,11 +2128,8 @@ function App() {
     undoStackRef.current = undoStackRef.current.concat(entry);
     setUndoLen(undoStackRef.current.length);
     setRedoLen(redoStackRef.current.length);
-    isUndoRedoRef.current = true;
+    skipCommitCountRef.current += 1;
     updateSong(entry.songId, Object.fromEntries([[entry.field, entry.newValue]]));
-    setTimeout(function() {
-      isUndoRedoRef.current = false;
-    }, 0);
   }
   const songsById = useMemo(() => songs ? Object.fromEntries(songs.map((s) => [s.id, s])) : {}, [songs]);
   const activeSetlist = useMemo(
