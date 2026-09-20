@@ -529,7 +529,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.6-beta3";
+const APP_VERSION = "2.0.6-beta4";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -1208,6 +1208,7 @@ function App() {
     clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 2e3);
   }, []);
+  const [showCopySheet, setShowCopySheet] = useState(false);
   const [openId, setOpenId] = useState(null);
   const [pendingRestore, setPendingRestore] = useState(null);
   const songUiStateRef = useRef({ collapsed: null, scrollTop: 0 });
@@ -2414,24 +2415,7 @@ function App() {
       canRedo: redoLen > 0,
       onUndo: performUndo,
       onRedo: performRedo,
-      onCopySetlist: activeSetlist ? () => {
-        const setNames = slSectionOrder.filter((n) => n !== "Not In Show");
-        const multiSet = setNames.length > 1;
-        const lines = [];
-        setNames.forEach((sec) => {
-          if (multiSet) lines.push(sec);
-          (slSongOrder[sec] || []).forEach((id, i) => {
-            const s = songsById[id];
-            if (s) lines.push(i + 1 + ". " + (s.title || "Untitled"));
-          });
-          if (multiSet) lines.push("");
-        });
-        const text = lines.join("\n").trimEnd();
-        navigator.clipboard.writeText(text).then(
-          () => showToast("Setlist copied"),
-          () => showToast("Copy failed")
-        );
-      } : null
+      onCopySetlist: activeSetlist ? () => setShowCopySheet(true) : null
     }
   ), showRecentEdits && /* @__PURE__ */ React.createElement(
     GlobalUndoHistoryModal,
@@ -2706,6 +2690,21 @@ function App() {
         setShowViewPicker(false);
       }
     }
+  ), showCopySheet && /* @__PURE__ */ React.createElement(
+    CopySetlistSheet,
+    {
+      sectionOrder: slSectionOrder,
+      songOrder: slSongOrder,
+      songsById,
+      onCopy: (text) => {
+        setShowCopySheet(false);
+        navigator.clipboard.writeText(text).then(
+          () => showToast("Setlist copied"),
+          () => showToast("Copy failed")
+        );
+      },
+      onClose: () => setShowCopySheet(false)
+    }
   ), /* @__PURE__ */ React.createElement(UploadToast, { upload: bgUpload, onRetry: retryBgUpload, onDismiss: dismissBgUpload }), toast && /* @__PURE__ */ React.createElement("div", { style: styles.toast }, toast)));
 }
 function ViewPickerModal({ views, currentViewId, onPick }) {
@@ -2969,6 +2968,57 @@ function SetlistBar({ setlist, counts, sectionOrder, setBreaks, expanded, onTogg
     /* @__PURE__ */ React.createElement("div", { style: { ...styles.slStatNum, ...c.accent ? styles.slStatNumAccent : {} } }, c.num),
     /* @__PURE__ */ React.createElement("div", { style: styles.slStatLabel }, c.label)
   ))), setlist && setlist.notes ? /* @__PURE__ */ React.createElement("div", { style: styles.slBarNotes }, /* @__PURE__ */ React.createElement("div", { style: styles.slBarNotesLbl }, "Notes"), /* @__PURE__ */ React.createElement("div", { style: styles.slBarNotesTxt }, setlist.notes)) : null, /* @__PURE__ */ React.createElement("div", { style: styles.slBarActions }, /* @__PURE__ */ React.createElement("button", { style: styles.slBarActBtn, onClick: onEdit, disabled: !setlist }, /* @__PURE__ */ React.createElement(Icon, { name: "pencil", size: 13, color: "var(--text)" }), "Edit Show Details"), /* @__PURE__ */ React.createElement("button", { style: { ...styles.slBarActBtn, ...styles.slBarActBtnGold }, onClick: onSwitch }, /* @__PURE__ */ React.createElement(Icon, { name: "shuffle", size: 13, color: "var(--gold)" }), "Switch Shows"))));
+}
+const COPY_FORMATS = [
+  { id: "titles", label: "Titles only", format: (s) => s.title || "Untitled" },
+  { id: "features", label: "With features", format: (s) => {
+    let t = s.title || "Untitled";
+    if (s.features) t += " \u2014 Feat. " + s.features;
+    return t;
+  } },
+  { id: "instruments", label: "With instruments", format: (s) => {
+    let t = s.title || "Untitled";
+    if (s.alexInstrument) t += " \u2014 " + s.alexInstrument;
+    return t;
+  } },
+  { id: "tempo", label: "With tempo", format: (s) => {
+    let t = s.title || "Untitled";
+    const parts = [];
+    if (s.tempo) parts.push(s.tempo + " BPM");
+    if (s.timeSig) parts.push(s.timeSig);
+    if (parts.length) t += " \u2014 " + parts.join(", ");
+    return t;
+  } },
+  { id: "key", label: "With key", format: (s) => {
+    let t = s.title || "Untitled";
+    if (s.key) t += " \u2014 " + s.key;
+    return t;
+  } }
+];
+function CopySetlistSheet({ sectionOrder, songOrder, songsById, onCopy, onClose }) {
+  function buildText(fmt) {
+    const setNames = (sectionOrder || []).filter((n) => n !== "Not In Show");
+    const multiSet = setNames.length > 1;
+    const lines = [];
+    setNames.forEach((sec) => {
+      if (multiSet) lines.push(sec);
+      (songOrder[sec] || []).forEach((id, i) => {
+        const s = songsById[id];
+        if (s) lines.push(i + 1 + ". " + fmt.format(s));
+      });
+      if (multiSet) lines.push("");
+    });
+    return lines.join("\n").trimEnd();
+  }
+  return /* @__PURE__ */ React.createElement("div", { style: styles.modalBackdrop, onClick: onClose }, /* @__PURE__ */ React.createElement("div", { style: { ...styles.modalCard, maxWidth: 320 }, onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { style: styles.modalTitle }, "Copy setlist"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6, marginTop: 10 } }, COPY_FORMATS.map((fmt) => /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      key: fmt.id,
+      onClick: () => onCopy(buildText(fmt)),
+      style: styles.copyFormatBtn
+    },
+    fmt.label
+  )))));
 }
 function SetlistSwitchSheet({ setlists, activeId, defaultId, onPick, onSetDefault, onEditCurrent, onNew, onClose }) {
   const dated = setlists.filter((s) => s.date).sort((a, b) => String(a.date).localeCompare(String(b.date)));
@@ -5863,6 +5913,7 @@ const rawStyles = {
   modalTitle: { fontFamily: "var(--display)", fontWeight: 700, fontSize: 17, color: "var(--text)", marginBottom: 4 },
   modalSubtitle: { fontSize: 12.5, color: "var(--dim)", marginBottom: 14 },
   viewPickerList: { display: "flex", flexDirection: "column", gap: 8 },
+  copyFormatBtn: { display: "block", width: "100%", textAlign: "left", background: "var(--surface-raised)", border: "1px solid var(--line)", borderRadius: 10, padding: "12px 14px", color: "var(--text)", fontFamily: "var(--body)", fontSize: 14.5, cursor: "pointer" },
   viewPickerOption: { display: "block", width: "100%", textAlign: "left", background: "var(--surface-raised)", border: "1px solid var(--line)", borderRadius: 10, padding: "13px 14px", color: "var(--text)", fontFamily: "var(--display)", fontWeight: 600, fontSize: 15, cursor: "pointer" },
   viewPickerOptionActive: { borderColor: "var(--gold)", color: "var(--gold)", background: "rgba(227,168,59,0.1)" },
   modalOption: { display: "block", width: "100%", textAlign: "left", background: "var(--surface-raised)", border: "1px solid var(--line)", borderRadius: 10, padding: 12, marginBottom: 10, cursor: "pointer" },
