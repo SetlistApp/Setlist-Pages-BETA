@@ -259,6 +259,8 @@ function Icon({ name, size = 18, color = "currentColor", style, className }) {
       return /* @__PURE__ */ React.createElement("svg", { ...common }, /* @__PURE__ */ React.createElement("polyline", { points: "1 4 1 10 7 10" }), /* @__PURE__ */ React.createElement("path", { d: "M3.51 15a9 9 0 1 0 2.13-9.36L1 10" }));
     case "redo":
       return /* @__PURE__ */ React.createElement("svg", { ...common }, /* @__PURE__ */ React.createElement("polyline", { points: "23 4 23 10 17 10" }), /* @__PURE__ */ React.createElement("path", { d: "M20.49 15a9 9 0 1 1-2.13-9.36L23 10" }));
+    case "clipboard":
+      return /* @__PURE__ */ React.createElement("svg", { ...common }, /* @__PURE__ */ React.createElement("path", { d: "M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" }), /* @__PURE__ */ React.createElement("rect", { x: "8", y: "2", width: "8", height: "4", rx: "1", ry: "1" }));
     case "clock":
       return /* @__PURE__ */ React.createElement("svg", { ...common }, /* @__PURE__ */ React.createElement("circle", { cx: "12", cy: "12", r: "10" }), /* @__PURE__ */ React.createElement("polyline", { points: "12 6 12 12 16 14" }));
     default:
@@ -527,7 +529,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.6-beta2";
+const APP_VERSION = "2.0.6-beta3";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -1199,6 +1201,13 @@ function App() {
   const [activeTab, setActiveTab] = useState("Setlist");
   const [query, setQuery] = useState("");
   const searchInputRef = useRef(null);
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+  const showToast = useCallback((msg) => {
+    setToast(msg);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2e3);
+  }, []);
   const [openId, setOpenId] = useState(null);
   const [pendingRestore, setPendingRestore] = useState(null);
   const songUiStateRef = useRef({ collapsed: null, scrollTop: 0 });
@@ -2404,7 +2413,25 @@ function App() {
       canUndo: undoLen > 0,
       canRedo: redoLen > 0,
       onUndo: performUndo,
-      onRedo: performRedo
+      onRedo: performRedo,
+      onCopySetlist: activeSetlist ? () => {
+        const setNames = slSectionOrder.filter((n) => n !== "Not In Show");
+        const multiSet = setNames.length > 1;
+        const lines = [];
+        setNames.forEach((sec) => {
+          if (multiSet) lines.push(sec);
+          (slSongOrder[sec] || []).forEach((id, i) => {
+            const s = songsById[id];
+            if (s) lines.push(i + 1 + ". " + (s.title || "Untitled"));
+          });
+          if (multiSet) lines.push("");
+        });
+        const text = lines.join("\n").trimEnd();
+        navigator.clipboard.writeText(text).then(
+          () => showToast("Setlist copied"),
+          () => showToast("Copy failed")
+        );
+      } : null
     }
   ), showRecentEdits && /* @__PURE__ */ React.createElement(
     GlobalUndoHistoryModal,
@@ -2679,7 +2706,7 @@ function App() {
         setShowViewPicker(false);
       }
     }
-  ), /* @__PURE__ */ React.createElement(UploadToast, { upload: bgUpload, onRetry: retryBgUpload, onDismiss: dismissBgUpload })));
+  ), /* @__PURE__ */ React.createElement(UploadToast, { upload: bgUpload, onRetry: retryBgUpload, onDismiss: dismissBgUpload }), toast && /* @__PURE__ */ React.createElement("div", { style: styles.toast }, toast)));
 }
 function ViewPickerModal({ views, currentViewId, onPick }) {
   return /* @__PURE__ */ React.createElement("div", { style: styles.modalBackdrop }, /* @__PURE__ */ React.createElement("div", { style: styles.modalCard }, /* @__PURE__ */ React.createElement("div", { style: styles.modalTitle }, "Who's viewing?"), /* @__PURE__ */ React.createElement("div", { style: styles.modalSubtitle }, "Pick your view for this session."), /* @__PURE__ */ React.createElement("div", { style: styles.viewPickerList }, VIEW_IDS.map((vid) => {
@@ -2697,7 +2724,7 @@ function ViewPickerModal({ views, currentViewId, onPick }) {
     );
   }))));
 }
-function Header({ isBeta, saveState, syncStatus, onRefresh, refreshing, manualRefreshing, onBeforeReload, openTodoCount, onOpenTodoScreen, lastSaveError, driveNeedsAttentionCount, onOpenDriveReview, views, activeViewId, onSelectView, onOpenRecentEdits, canUndo, canRedo, onUndo, onRedo }) {
+function Header({ isBeta, saveState, syncStatus, onRefresh, refreshing, manualRefreshing, onBeforeReload, openTodoCount, onOpenTodoScreen, lastSaveError, driveNeedsAttentionCount, onOpenDriveReview, views, activeViewId, onSelectView, onOpenRecentEdits, canUndo, canRedo, onUndo, onRedo, onCopySetlist }) {
   const [showMenu, setShowMenu] = useState(false);
   const [showZoomControl, setShowZoomControl] = useState(false);
   useCloseMenuOnOutsideClick(showMenu, () => setShowMenu(false));
@@ -2770,6 +2797,17 @@ function Header({ isBeta, saveState, syncStatus, onRefresh, refreshing, manualRe
     },
     /* @__PURE__ */ React.createElement(Icon, { name: "clock", size: 14, color: "var(--dim)" }),
     "Recent edits"
+  ), onCopySetlist && /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      onClick: () => {
+        onCopySetlist();
+        setShowMenu(false);
+      },
+      style: { ...styles.sectionMenuItem, display: "flex", alignItems: "center", gap: 8 }
+    },
+    /* @__PURE__ */ React.createElement(Icon, { name: "clipboard", size: 14, color: "var(--dim)" }),
+    "Copy setlist"
   ), /* @__PURE__ */ React.createElement(
     "button",
     {
@@ -3104,10 +3142,10 @@ function SetlistView({ songs, sectionOrder, songOrder, setBreaks, onOpen, onSong
       style: styles.sectionMenuItem
     },
     editMode ? "Done editing order" : "Edit order"
-  ))), editMode && /* @__PURE__ */ React.createElement("span", { onPointerDown: startHeaderDrag(sec), style: styles.dragHandle }, /* @__PURE__ */ React.createElement(Icon, { name: "grip", size: 16, color: "var(--dim)" }))), (localSongOrder[sec] || []).map((id) => {
+  ))), editMode && /* @__PURE__ */ React.createElement("span", { onPointerDown: startHeaderDrag(sec), style: styles.dragHandle }, /* @__PURE__ */ React.createElement(Icon, { name: "grip", size: 16, color: "var(--dim)" }))), (localSongOrder[sec] || []).map((id, songIdx) => {
     const s = songsById[id];
     if (!s) return null;
-    return /* @__PURE__ */ React.createElement("div", { key: id, ref: setRowRef("song:" + id), style: { ...styles.dragRow, ...activeDragId === "song:" + id ? styles.dragging : {} } }, editMode && /* @__PURE__ */ React.createElement("span", { onPointerDown: startSongDrag(id), style: styles.dragHandle }, /* @__PURE__ */ React.createElement(Icon, { name: "grip", size: 16, color: "var(--dim)" })), /* @__PURE__ */ React.createElement("button", { onClick: () => onOpen(id), style: styles.rowMain }, /* @__PURE__ */ React.createElement("span", { style: { ...styles.dot, background: getDotColor(s) } }), /* @__PURE__ */ React.createElement(SongTitleAndFeatures, { song: s })), editMode && onRemoveFromSetlist && /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", { key: id, ref: setRowRef("song:" + id), style: { ...styles.dragRow, ...activeDragId === "song:" + id ? styles.dragging : {} } }, editMode && /* @__PURE__ */ React.createElement("span", { onPointerDown: startSongDrag(id), style: styles.dragHandle }, /* @__PURE__ */ React.createElement(Icon, { name: "grip", size: 16, color: "var(--dim)" })), /* @__PURE__ */ React.createElement("button", { onClick: () => onOpen(id), style: styles.rowMain }, /* @__PURE__ */ React.createElement("span", { style: styles.songNum }, songIdx + 1), /* @__PURE__ */ React.createElement("span", { style: { ...styles.dot, background: getDotColor(s) } }), /* @__PURE__ */ React.createElement(SongTitleAndFeatures, { song: s })), editMode && onRemoveFromSetlist && /* @__PURE__ */ React.createElement(
       "button",
       {
         onClick: () => onRemoveFromSetlist(id),
@@ -5588,6 +5626,7 @@ const rawStyles = {
   dragRow: { display: "flex", alignItems: "center", gap: 4, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 12, padding: "5px 8px 5px 4px" },
   rowMain: { flex: 1, display: "flex", alignItems: "center", gap: 12, background: "transparent", border: "none", cursor: "pointer", textAlign: "left", padding: "9px 6px" },
   dragHandle: { padding: "4px 6px", touchAction: "none", cursor: "grab", display: "flex", alignItems: "center", flexShrink: 0 },
+  songNum: { fontFamily: "var(--mono)", fontSize: 13, color: "var(--dim)", minWidth: 18, textAlign: "right", flexShrink: 0 },
   dot: { width: 9, height: 9, borderRadius: "50%", flexShrink: 0, boxShadow: "0 0 6px currentColor" },
   rowTitleFeaturesWrap: { flex: 1, minWidth: 0, display: "flex", flexWrap: "wrap", alignItems: "baseline", columnGap: 8, rowGap: 1 },
   rowTitle: { fontFamily: "var(--display)", fontWeight: 600, fontSize: 20.5, color: "var(--text)", letterSpacing: "0.01em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
@@ -5642,6 +5681,7 @@ const rawStyles = {
   sectionDivider: { display: "flex", alignItems: "center", gap: 8, padding: "12px 6px 6px" },
   sectionDividerLabel: { fontFamily: "var(--display)", fontWeight: 600, fontSize: 13, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--gold)", flex: 1 },
   sectionDividerCount: { fontFamily: "var(--mono)", fontSize: 11, color: "var(--dim)" },
+  toast: { position: "absolute", bottom: 84, left: "50%", transform: "translateX(-50%)", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 10, padding: "8px 18px", fontFamily: "var(--body)", fontSize: 14, color: "var(--text)", boxShadow: "0 4px 14px rgba(0,0,0,0.4)", zIndex: 100, whiteSpace: "nowrap" },
   fab: { position: "absolute", right: 18, bottom: 22, width: 52, height: 52, borderRadius: "50%", background: "var(--gold)", border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", boxShadow: "0 6px 18px rgba(227,168,59,0.35)" },
   detailWrap: { position: "absolute", inset: 0, background: "var(--bg)", display: "flex", flexDirection: "column", touchAction: "pan-y" },
   detailTopBar: { display: "flex", alignItems: "flex-start", gap: 6, padding: "12px 12px 10px", borderBottom: "1px solid var(--line)", position: "relative" },
