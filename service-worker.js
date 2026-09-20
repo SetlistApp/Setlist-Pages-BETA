@@ -9,7 +9,7 @@
  * Code_v*.gs — bump all of them together on every ship.
  */
 
-var SW_VERSION = "2.0.6-beta4";
+var SW_VERSION = "2.0.6";
 var CACHE = "setlist-shell-" + SW_VERSION;
 
 /* The app shell: the page itself plus the two CDN scripts it pulls today.
