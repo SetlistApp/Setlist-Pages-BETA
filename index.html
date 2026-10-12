@@ -510,14 +510,26 @@ function defaultViews(allIds) {
   });
   return views;
 }
-const CACHE_KEY = "bandSetlist_cache";
-const PREF_VIEW_KEY = "bandSetlist_activeViewId";
-const PREF_SETLIST_KEY = "bandSetlist_activeSetlistId";
-const PREF_LAST_SEEN_DEFAULT_KEY = "bandSetlist_lastSeenDefaultId";
+function storageChannel() {
+  return typeof window !== "undefined" && window.__SUPABASE_CHANNEL__ || "default";
+}
+function storageKey(base, channel) {
+  return base + "_" + channel;
+}
+const LEGACY_CACHE_KEY = "bandSetlist_cache";
+const LEGACY_PREF_VIEW_KEY = "bandSetlist_activeViewId";
+const LEGACY_PREF_SETLIST_KEY = "bandSetlist_activeSetlistId";
+const LEGACY_PREF_LAST_SEEN_DEFAULT_KEY = "bandSetlist_lastSeenDefaultId";
+const LEGACY_RELOAD_SNAPSHOT_KEY = "bandSetlist_reloadSnapshot";
+const LEGACY_PENDING_EDITS_KEY = "bandSetlist_pendingEdits";
+const CACHE_KEY = storageKey(LEGACY_CACHE_KEY, storageChannel());
+const PREF_VIEW_KEY = storageKey(LEGACY_PREF_VIEW_KEY, storageChannel());
+const PREF_SETLIST_KEY = storageKey(LEGACY_PREF_SETLIST_KEY, storageChannel());
+const PREF_LAST_SEEN_DEFAULT_KEY = storageKey(LEGACY_PREF_LAST_SEEN_DEFAULT_KEY, storageChannel());
 const PREF_ARR_COL_KEY = "bandSetlist_arrColPct";
-const RELOAD_SNAPSHOT_KEY = "bandSetlist_reloadSnapshot";
+const RELOAD_SNAPSHOT_KEY = storageKey(LEGACY_RELOAD_SNAPSHOT_KEY, storageChannel());
 const RELOAD_SNAPSHOT_MAX_AGE_MS = 6e4;
-const PENDING_EDITS_KEY = "bandSetlist_pendingEdits";
+const PENDING_EDITS_KEY = storageKey(LEGACY_PENDING_EDITS_KEY, storageChannel());
 const PENDING_EDITS_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
 const RETRY_DELAY_MS = 3e3;
 const RETRY_MAX_DELAY_MS = 3e4;
@@ -529,7 +541,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.7-beta1";
+const APP_VERSION = "2.0.7-beta2";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -540,6 +552,13 @@ function readRecoverablePatches(raw, now) {
   } catch (e) {
     return null;
   }
+}
+function claimLegacyPendingEdits(raw, now, channel) {
+  if (channel !== "sync-prod" || !raw) return null;
+  return readRecoverablePatches(raw, now);
+}
+function shouldClearLegacyPendingEdits(channel) {
+  return channel === "sync-prod";
 }
 function versionBase(v) {
   return String(v || "").split("-")[0].split(".").slice(0, 3).join(".");
@@ -980,9 +999,10 @@ function loadPersonalPrefs() {
   let lastSeenDefaultId = null;
   let arrColPct = 50;
   try {
-    activeViewId = localStorage.getItem(PREF_VIEW_KEY) || null;
-    activeSetlistId = localStorage.getItem(PREF_SETLIST_KEY) || null;
-    lastSeenDefaultId = localStorage.getItem(PREF_LAST_SEEN_DEFAULT_KEY) || null;
+    activeViewId = localStorage.getItem(PREF_VIEW_KEY) || localStorage.getItem(LEGACY_PREF_VIEW_KEY) || null;
+    activeSetlistId = localStorage.getItem(PREF_SETLIST_KEY) || localStorage.getItem(LEGACY_PREF_SETLIST_KEY) || null;
+    const seenNs = localStorage.getItem(PREF_LAST_SEEN_DEFAULT_KEY);
+    lastSeenDefaultId = (seenNs != null ? seenNs : localStorage.getItem(LEGACY_PREF_LAST_SEEN_DEFAULT_KEY)) || null;
     const savedPct = localStorage.getItem(PREF_ARR_COL_KEY);
     if (savedPct != null) {
       const n = parseFloat(savedPct);
@@ -2016,12 +2036,29 @@ function App() {
         setIsBeta(!!data.isBeta);
         pruneChangeLog();
         let recovered = null;
+        let legacyClaimed = false;
         if (!usedCache) {
           try {
             const raw = localStorage.getItem(PENDING_EDITS_KEY);
             if (raw) {
               recovered = readRecoverablePatches(raw, Date.now());
               if (!recovered) localStorage.removeItem(PENDING_EDITS_KEY);
+            }
+          } catch (e) {
+          }
+          try {
+            const channel = storageChannel();
+            const legacyRaw = localStorage.getItem(LEGACY_PENDING_EDITS_KEY);
+            if (legacyRaw && shouldClearLegacyPendingEdits(channel)) {
+              const legacy = claimLegacyPendingEdits(legacyRaw, Date.now(), channel);
+              if (legacy) {
+                const merged = { ...legacy };
+                if (recovered) {
+                  for (const id in recovered) merged[id] = { ...merged[id] || {}, ...recovered[id] };
+                }
+                recovered = merged;
+              }
+              legacyClaimed = true;
             }
           } catch (e) {
           }
@@ -2051,6 +2088,13 @@ function App() {
               }
             }
           }, 0);
+        }
+        if (legacyClaimed) {
+          persistPendingEdits();
+          try {
+            localStorage.removeItem(LEGACY_PENDING_EDITS_KEY);
+          } catch (e) {
+          }
         }
         setSectionOrder(data.sectionOrder);
         setSongOrder(data.songOrder);
