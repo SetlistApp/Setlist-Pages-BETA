@@ -529,7 +529,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.6";
+const APP_VERSION = "2.0.7-beta1";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -1087,8 +1087,11 @@ function saveViewsRemote(views) {
     return saveViewsToSupabase(views);
   });
 }
-function scanDriveLinksRemote() {
-  return gsCall("scanDriveLinks", void 0, 12e4);
+function scanDriveLinksRemote(songs) {
+  const slim = (songs || []).map(function(s) {
+    return { id: s.id, title: s.title, recording: s.recording || [] };
+  });
+  return gsCall("scanDriveLinks", { songs: slim }, 12e4);
 }
 function getDriveFolderSettingsRemote() {
   return gsCall("getDriveFolderSettings");
@@ -1120,6 +1123,138 @@ function driveFileIdFromUrl(url) {
   const m = s.match(/\/file\/d\/([-\w]{20,})/) || s.match(/[?&]id=([-\w]{20,})/) || s.match(/^([-\w]{20,})$/);
   return m ? m[1] : "";
 }
+function addRecordingLinkOnce(recs, link) {
+  const list = Array.isArray(recs) ? recs : [];
+  const fid = driveFileIdFromUrl(link && link.url);
+  if (fid && list.some(function(l) {
+    return driveFileIdFromUrl(l && l.url) === fid;
+  })) return list;
+  return list.concat([link]);
+}
+function mergeDriveScanIntoRecordings(recs, toAdd, staleFileIds) {
+  const list = Array.isArray(recs) ? recs : [];
+  const stale = new Set(staleFileIds || []);
+  let next = list.filter(function(l) {
+    const fid = driveFileIdFromUrl(l && l.url);
+    return !fid || !stale.has(fid);
+  });
+  (toAdd || []).forEach(function(l) {
+    next = addRecordingLinkOnce(next, l);
+  });
+  const same = next.length === list.length && next.every(function(l, i) {
+    return l === list[i];
+  });
+  return same ? list : next;
+}
+const UPLOAD_STORE = "pending";
+let _uploadDbPromise = null;
+function openUploadDb() {
+  if (_uploadDbPromise) return _uploadDbPromise;
+  _uploadDbPromise = new Promise(function(resolve, reject) {
+    if (typeof indexedDB === "undefined") {
+      reject(new Error("IndexedDB unavailable"));
+      return;
+    }
+    const channel = typeof window !== "undefined" && window.__SUPABASE_CHANNEL__ || "default";
+    const req = indexedDB.open("bandSetlist_uploads_" + channel, 1);
+    req.onupgradeneeded = function() {
+      req.result.createObjectStore(UPLOAD_STORE, { keyPath: "uploadId" });
+    };
+    req.onsuccess = function() {
+      const db = req.result;
+      db.onclose = function() {
+        _uploadDbPromise = null;
+      };
+      db.onversionchange = function() {
+        db.close();
+        _uploadDbPromise = null;
+      };
+      resolve(db);
+    };
+    req.onerror = function() {
+      reject(req.error || new Error("IndexedDB open failed"));
+    };
+  });
+  _uploadDbPromise.catch(function() {
+    _uploadDbPromise = null;
+  });
+  return _uploadDbPromise;
+}
+function uploadDbTx(mode, fn) {
+  return openUploadDb().then(function(db) {
+    return new Promise(function(resolve, reject) {
+      let tx;
+      try {
+        tx = db.transaction(UPLOAD_STORE, mode);
+      } catch (e) {
+        _uploadDbPromise = null;
+        reject(e);
+        return;
+      }
+      let out;
+      const r = fn(tx.objectStore(UPLOAD_STORE));
+      if (r) r.onsuccess = function() {
+        out = r.result;
+      };
+      tx.oncomplete = function() {
+        resolve(out);
+      };
+      tx.onerror = function() {
+        reject(tx.error || new Error("IndexedDB write failed"));
+      };
+      tx.onabort = function() {
+        reject(tx.error || new Error("IndexedDB write aborted"));
+      };
+    });
+  });
+}
+function savePendingUpload(rec) {
+  return uploadDbTx("readwrite", function(s) {
+    return s.put(rec);
+  });
+}
+function getPendingUpload(id) {
+  return uploadDbTx("readonly", function(s) {
+    return s.get(id);
+  });
+}
+function deletePendingUpload(id) {
+  return uploadDbTx("readwrite", function(s) {
+    return s.delete(id);
+  });
+}
+function listPendingUploads() {
+  return uploadDbTx("readonly", function(s) {
+    return s.getAll();
+  });
+}
+function updatePendingUpload(id, patch) {
+  return uploadDbTx("readwrite", function(s) {
+    const g = s.get(id);
+    g.onsuccess = function() {
+      if (g.result) s.put(Object.assign(g.result, patch));
+    };
+    return null;
+  });
+}
+const PERMANENT_UPLOAD_REASONS = { "too-big": 1, "no-folder": 1, "folder-open-failed": 1, "needs-drive-auth": 1, "no-data": 1, "no-song": 1 };
+function uploadRetryDelay(attempt) {
+  const n = Math.max(0, (attempt || 1) - 1);
+  return Math.min(5e3 * Math.pow(2, n), 5 * 60 * 1e3) + Math.floor(Math.random() * 2e3);
+}
+async function fetchSongRecordingFileIds(songId) {
+  const client = getSupabaseClient();
+  if (!client) throw new Error("Supabase client not available");
+  const res = await supabaseCall("uploadVerify", function() {
+    return client.from("songs").select("recording").eq("id", songId).maybeSingle();
+  });
+  if (res.error) throw new Error(res.error.message || "Couldn't check the song");
+  if (!res.data) return null;
+  const recs = Array.isArray(res.data.recording) ? res.data.recording : [];
+  return new Set(recs.map(function(l) {
+    return driveFileIdFromUrl(l && l.url);
+  }).filter(Boolean));
+}
 function deleteFileReasonText(reason) {
   switch (reason) {
     case "needs-drive-auth":
@@ -1133,39 +1268,90 @@ function deleteFileReasonText(reason) {
   }
 }
 const UploadContext = React.createContext(null);
-function UploadToast({ upload, onRetry, onDismiss }) {
-  const [elapsed, setElapsed] = useState(0);
+function UploadToast({ uploads, onRetry, onRetryNow, onDiscard, onSaveCopy }) {
+  const [now, setNow] = useState(Date.now());
+  const [armDiscard, setArmDiscard] = useState(null);
+  const list = uploads || [];
+  const active = list.filter(function(u) {
+    return u.phase !== "done";
+  });
+  const focus = list.find(function(u) {
+    return u.phase === "uploading" || u.phase === "linking";
+  }) || list.find(function(u) {
+    return u.phase === "error";
+  }) || list.find(function(u) {
+    return u.phase === "waiting" || u.phase === "queued";
+  }) || list.find(function(u) {
+    return u.phase === "done";
+  });
+  const ticking = !!(focus && (focus.phase === "uploading" || focus.phase === "linking" || focus.phase === "waiting"));
   useEffect(() => {
-    if (!upload || upload.phase !== "uploading") return;
-    setElapsed(Math.floor((Date.now() - upload.startedAt) / 1e3));
-    const id = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - upload.startedAt) / 1e3));
+    if (!ticking) return;
+    setNow(Date.now());
+    const id = setInterval(function() {
+      setNow(Date.now());
     }, 1e3);
     return () => clearInterval(id);
-  }, [upload && upload.phase, upload && upload.startedAt]);
-  if (!upload) return null;
-  const isUploading = upload.phase === "uploading";
-  const isDone = upload.phase === "done";
-  const isError = upload.phase === "error";
+  }, [ticking, focus && focus.uploadId]);
+  useEffect(() => {
+    setArmDiscard(null);
+  }, [focus && focus.uploadId, focus && focus.phase]);
+  if (!focus) return null;
+  const isRunning = focus.phase === "uploading" || focus.phase === "linking";
+  const isDone = focus.phase === "done";
+  const isError = focus.phase === "error";
+  const isWaiting = focus.phase === "waiting" || focus.phase === "queued";
+  const others = active.filter(function(u) {
+    return u.uploadId !== focus.uploadId;
+  }).length;
+  let title, detail;
+  if (isDone) {
+    title = focus.songGone ? "Uploaded to Drive" : "Uploaded!";
+    detail = focus.songGone ? focus.songTitle + " was deleted \u2014 the file is in the Drive folder." : focus.songTitle;
+  } else if (isRunning) {
+    title = focus.phase === "linking" ? "Adding to song\u2026" : "Uploading\u2026";
+    detail = focus.songTitle + " \xB7 " + humanSize(focus.size || 0) + " \xB7 " + Math.max(0, Math.floor((now - (focus.startedAt || now)) / 1e3)) + "s";
+  } else if (isError) {
+    title = "Upload needs you";
+    detail = focus.songTitle + " \u2014 " + (focus.errMsg || "Upload failed.");
+  } else {
+    const secs = Math.max(0, Math.ceil(((focus.retryAt || 0) - now) / 1e3));
+    title = focus.phase === "queued" ? "Waiting to upload" : "Will retry upload" + (secs ? " in " + secs + "s" : "\u2026");
+    detail = focus.songTitle + (focus.errMsg ? " \u2014 " + focus.errMsg : "") + (focus.stored ? " Saved on this phone." : " Keep the app open.");
+  }
+  if (others > 0 && !isDone) detail += " \xB7 " + others + " more waiting";
   const toastStyle = {
     position: "fixed",
     bottom: 16,
     left: 12,
     right: 12,
     zIndex: 9999,
-    background: isError ? "var(--surface-raised)" : isDone ? "rgba(60,140,80,0.95)" : "var(--surface-raised)",
+    background: isDone ? "rgba(60,140,80,0.95)" : "var(--surface-raised)",
     border: isError ? "1px solid var(--needs)" : isDone ? "1px solid rgba(60,140,80,0.5)" : "1px solid var(--gold)",
     borderRadius: 12,
     padding: "12px 14px",
     boxShadow: "0 4px 20px rgba(0,0,0,0.25)",
     fontFamily: "var(--display)",
     color: "var(--text)",
-    animation: isUploading ? "uploadPulse 2s ease-in-out infinite" : "none"
+    animation: isRunning ? "uploadPulse 2s ease-in-out infinite" : "none"
   };
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, isUploading && /* @__PURE__ */ React.createElement("style", null, `@keyframes uploadPulse {
+  const btn = { background: "none", border: "1px solid var(--line)", color: "var(--dim)", borderRadius: 6, padding: "6px 10px", fontSize: 12, cursor: "pointer" };
+  const btnGold = { ...btn, background: "var(--gold)", border: "none", color: "var(--bg)", fontWeight: 600 };
+  const armed = armDiscard === focus.uploadId;
+  return /* @__PURE__ */ React.createElement(React.Fragment, null, isRunning && /* @__PURE__ */ React.createElement("style", null, `@keyframes uploadPulse {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.85; }
-        }`), /* @__PURE__ */ React.createElement("div", { style: toastStyle }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, isUploading && /* @__PURE__ */ React.createElement(Icon, { name: "loader", className: "spin", size: 16, color: "var(--gold)" }), isDone && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16 } }, "\u2713"), isError && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, color: "var(--needs)" } }, "\u2715"), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isDone ? "#fff" : "var(--text)" } }, isDone ? "Uploaded!" : isError ? "Upload failed" : "Uploading\u2026"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: isDone ? "rgba(255,255,255,0.8)" : "var(--dim)", marginTop: 2 } }, upload.songTitle, isUploading && /* @__PURE__ */ React.createElement(React.Fragment, null, " \xB7 ", humanSize(upload.fileSize), " \xB7 ", elapsed, "s"), isError && upload.errMsg && /* @__PURE__ */ React.createElement(React.Fragment, null, " \u2014 ", upload.errMsg))), isError && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6 } }, /* @__PURE__ */ React.createElement("button", { onClick: onRetry, style: { background: "var(--gold)", border: "none", color: "var(--bg)", fontWeight: 600, borderRadius: 6, padding: "6px 10px", fontSize: 12, cursor: "pointer" } }, "Retry"), /* @__PURE__ */ React.createElement("button", { onClick: onDismiss, style: { background: "none", border: "1px solid var(--line)", color: "var(--dim)", borderRadius: 6, padding: "6px 10px", fontSize: 12, cursor: "pointer" } }, "Dismiss")))));
+        }`), /* @__PURE__ */ React.createElement("div", { style: toastStyle }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } }, isRunning && /* @__PURE__ */ React.createElement(Icon, { name: "loader", className: "spin", size: 16, color: "var(--gold)" }), isDone && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16 } }, "\u2713"), isError && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 16, color: "var(--needs)" } }, "!"), isWaiting && /* @__PURE__ */ React.createElement(Icon, { name: "loader", size: 16, color: "var(--dim)" }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isDone ? "#fff" : "var(--text)" } }, title), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: isDone ? "rgba(255,255,255,0.8)" : "var(--dim)", marginTop: 2 } }, detail)), isWaiting && focus.phase === "waiting" && /* @__PURE__ */ React.createElement("button", { onClick: onRetryNow, style: btnGold }, "Retry now")), isError && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, marginTop: 10, justifyContent: "flex-end" } }, /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      onClick: () => {
+        if (armed) onDiscard(focus.uploadId);
+        else setArmDiscard(focus.uploadId);
+      },
+      style: armed ? { ...btn, color: "var(--needs)", borderColor: "var(--needs)" } : btn
+    },
+    armed ? "Tap again \u2014 discard" : "Discard"
+  ), /* @__PURE__ */ React.createElement("button", { onClick: () => onSaveCopy(focus.uploadId), style: btn }, "Save copy"), /* @__PURE__ */ React.createElement("button", { onClick: () => onRetry(focus.uploadId), style: btnGold }, "Retry"))));
 }
 function App() {
   const [songs, setSongs] = useState(null);
@@ -1212,59 +1398,273 @@ function App() {
   const [openId, setOpenId] = useState(null);
   const [pendingRestore, setPendingRestore] = useState(null);
   const songUiStateRef = useRef({ collapsed: null, scrollTop: 0 });
-  const [bgUpload, setBgUpload] = useState(null);
+  const [uploads, setUploads] = useState([]);
+  const uploadsRef = useRef([]);
+  const uploadBlobsRef = useRef({});
+  const uploadPumpingRef = useRef(false);
+  const uploadTimerRef = useRef(null);
+  const pumpUploadsRef = useRef(null);
   const songsRef = useRef(songs);
   songsRef.current = songs;
-  const bgPayloadRef = useRef(null);
-  const bgFileRef = useRef(null);
-  function runBgUpload(songId, songTitle, fileOrBlob, payload) {
-    const fileSize = fileOrBlob.size;
-    setBgUpload({ songId, songTitle, fileSize, startedAt: Date.now(), phase: "uploading", errMsg: "" });
-    bgPayloadRef.current = payload;
-    bgFileRef.current = fileOrBlob;
-    (async function() {
+  function setUploadList(next) {
+    uploadsRef.current = next;
+    setUploads(next);
+  }
+  function patchUpload(id, patch) {
+    setUploadList(uploadsRef.current.map(function(u) {
+      return u.uploadId === id ? Object.assign({}, u, patch) : u;
+    }));
+  }
+  function findUpload(id) {
+    return uploadsRef.current.find(function(u) {
+      return u.uploadId === id;
+    });
+  }
+  function kickUploads() {
+    setTimeout(function() {
+      if (pumpUploadsRef.current) pumpUploadsRef.current();
+    }, 0);
+  }
+  async function startBackgroundUpload(songId, songTitle, fileOrBlob, meta) {
+    const item = {
+      uploadId: "up" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+      songId,
+      songTitle,
+      filename: meta.filename || "",
+      mimeType: meta.mimeType || fileOrBlob.type || "audio/mp4",
+      name: meta.name || "Recording",
+      size: fileOrBlob.size,
+      createdAt: Date.now()
+    };
+    let stored = false;
+    try {
+      const bytes = await fileOrBlob.arrayBuffer();
+      await savePendingUpload(Object.assign({}, item, { bytes }));
+      stored = true;
       try {
-        var dataB64 = await fileToBase64(fileOrBlob);
-        var res = await uploadRecordingRemote(Object.assign({}, payload, { dataB64 }));
-        if (!res || !res.ok) {
-          setBgUpload(function(prev) {
-            return prev ? Object.assign({}, prev, { phase: "error", errMsg: uploadReasonText(res && res.reason) }) : null;
-          });
-          return;
-        }
-        var cur = songsRef.current;
-        var song = cur && cur.find(function(s) {
-          return s.id === songId;
-        });
-        var recs = song && song.recording || [];
-        updateSong(songId, { recording: [].concat(recs, [res.link]) });
-        setBgUpload(function(prev) {
-          return prev ? Object.assign({}, prev, { phase: "done" }) : null;
-        });
-        setTimeout(function() {
-          setBgUpload(null);
-        }, 2500);
-      } catch (err) {
-        setBgUpload(function(prev) {
-          return prev ? Object.assign({}, prev, { phase: "error", errMsg: err && err.message || "Upload failed" }) : null;
-        });
+        if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+      } catch (e) {
       }
-    })();
-  }
-  function retryBgUpload() {
-    var prev = bgUpload;
-    if (!prev || !bgPayloadRef.current || !bgFileRef.current) return;
-    runBgUpload(prev.songId, prev.songTitle, bgFileRef.current, bgPayloadRef.current);
-  }
-  function dismissBgUpload() {
-    setBgUpload(null);
-  }
-  function startBackgroundUpload(songId, songTitle, fileOrBlob, payload) {
-    if (bgUpload && bgUpload.phase === "uploading") return false;
-    runBgUpload(songId, songTitle, fileOrBlob, payload);
+    } catch (e) {
+      console.warn("Couldn't keep a copy of the recording on this device:", e);
+    }
+    uploadBlobsRef.current[item.uploadId] = fileOrBlob;
+    setUploadList(uploadsRef.current.concat([Object.assign({}, item, { phase: "queued", stored, attempts: 0 })]));
+    kickUploads();
     return true;
   }
-  const uploadCtxValue = { startUpload: startBackgroundUpload, busy: !!(bgUpload && bgUpload.phase === "uploading") };
+  async function getUploadBlob(u) {
+    if (uploadBlobsRef.current[u.uploadId]) return uploadBlobsRef.current[u.uploadId];
+    const rec = await getPendingUpload(u.uploadId);
+    if (!rec || !rec.bytes) return null;
+    const blob = new Blob([rec.bytes], { type: rec.mimeType || "audio/mp4" });
+    uploadBlobsRef.current[u.uploadId] = blob;
+    return blob;
+  }
+  function uploadFailed(id, msg) {
+    const u = findUpload(id);
+    const attempts = (u && u.attempts || 0) + 1;
+    patchUpload(id, { phase: "waiting", attempts, errMsg: msg, retryAt: Date.now() + uploadRetryDelay(attempts) });
+  }
+  async function attachAndConfirmLink(songId, result) {
+    const fid = result.fileId || driveFileIdFromUrl(result.link && result.link.url);
+    for (let i = 0; i < 6; i++) {
+      const song = (songsRef.current || []).find(function(s) {
+        return s.id === songId;
+      });
+      if (song) {
+        const recs = song.recording || [];
+        const next = addRecordingLinkOnce(recs, result.link);
+        if (next !== recs) {
+          updateSong(songId, { recording: next });
+          flushSongSave(songId);
+        }
+      }
+      await new Promise(function(r) {
+        setTimeout(r, i === 0 ? 1500 : 2500);
+      });
+      const remote = await fetchSongRecordingFileIds(songId);
+      if (remote === null) {
+        if (!song) return "no-song";
+        continue;
+      }
+      if (remote.has(fid)) return "saved";
+    }
+    return "pending";
+  }
+  async function runOneUpload(item) {
+    const id = item.uploadId;
+    patchUpload(id, { phase: "uploading", startedAt: Date.now() });
+    try {
+      let result = item.result;
+      if (!result) {
+        const blob = await getUploadBlob(item);
+        if (!blob) {
+          patchUpload(id, { phase: "error", errMsg: "This recording's audio is missing from the phone." });
+          return;
+        }
+        const song = (songsRef.current || []).find(function(s) {
+          return s.id === item.songId;
+        });
+        const dataB64 = await fileToBase64(blob);
+        const res = await uploadRecordingRemote({
+          songId: item.songId,
+          songTitle: song && song.title || item.songTitle,
+          uploadId: id,
+          filename: item.filename,
+          mimeType: item.mimeType,
+          name: item.name,
+          dataB64
+        });
+        if (!res || !res.ok) {
+          const reason = res && res.reason;
+          if (PERMANENT_UPLOAD_REASONS[reason]) patchUpload(id, { phase: "error", errMsg: uploadReasonText(reason) });
+          else uploadFailed(id, uploadReasonText(reason));
+          return;
+        }
+        result = { fileId: res.fileId, link: res.link };
+        patchUpload(id, { result });
+        try {
+          await updatePendingUpload(id, { result });
+        } catch (e) {
+        }
+      }
+      patchUpload(id, { phase: "linking" });
+      const verdict = await attachAndConfirmLink(item.songId, result);
+      if (verdict === "pending") {
+        uploadFailed(id, "It's in Drive \u2014 still adding it to the song.");
+        return;
+      }
+      try {
+        await deletePendingUpload(id);
+      } catch (e) {
+      }
+      delete uploadBlobsRef.current[id];
+      patchUpload(id, { phase: "done", songGone: verdict === "no-song" });
+      setTimeout(function() {
+        setUploadList(uploadsRef.current.filter(function(u) {
+          return u.uploadId !== id;
+        }));
+      }, verdict === "no-song" ? 6e3 : 2500);
+    } catch (err) {
+      const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+      uploadFailed(id, offline ? "No connection." : "Upload didn't go through.");
+      console.warn("Upload attempt failed:", err);
+    }
+  }
+  async function pumpUploads() {
+    if (uploadPumpingRef.current || !songsRef.current) return;
+    clearTimeout(uploadTimerRef.current);
+    const now = Date.now();
+    const next = uploadsRef.current.find(function(u) {
+      return u.phase === "queued" || u.phase === "waiting" && (u.retryAt || 0) <= now;
+    });
+    if (!next) {
+      const waits = uploadsRef.current.filter(function(u) {
+        return u.phase === "waiting";
+      }).map(function(u) {
+        return u.retryAt || 0;
+      });
+      if (waits.length) {
+        uploadTimerRef.current = setTimeout(kickUploads, Math.max(500, Math.min.apply(null, waits) - now));
+      }
+      return;
+    }
+    uploadPumpingRef.current = true;
+    try {
+      await runOneUpload(next);
+    } finally {
+      uploadPumpingRef.current = false;
+    }
+    kickUploads();
+  }
+  pumpUploadsRef.current = pumpUploads;
+  function retryUploadsNow() {
+    setUploadList(uploadsRef.current.map(function(u) {
+      return u.phase === "waiting" ? Object.assign({}, u, { retryAt: 0 }) : u;
+    }));
+    kickUploads();
+  }
+  function retryUpload(id) {
+    patchUpload(id, { phase: "queued", retryAt: 0 });
+    kickUploads();
+  }
+  async function discardUpload(id) {
+    try {
+      await deletePendingUpload(id);
+    } catch (e) {
+    }
+    delete uploadBlobsRef.current[id];
+    setUploadList(uploadsRef.current.filter(function(u) {
+      return u.uploadId !== id;
+    }));
+  }
+  async function saveUploadCopy(id) {
+    const u = findUpload(id);
+    if (!u) return;
+    const blob = await getUploadBlob(u);
+    if (!blob) return;
+    const m = String(u.filename || "").match(/\.([A-Za-z0-9]{1,5})$/);
+    const ext = m ? m[1] : recMimeToExt(u.mimeType);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = ((u.songTitle || "Recording") + " " + (u.name || "")).trim() + "." + ext;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function() {
+      URL.revokeObjectURL(url);
+    }, 6e4);
+  }
+  useEffect(() => {
+    if (!loaded) return;
+    let cancelled = false;
+    listPendingUploads().then(function(recs) {
+      if (cancelled || !recs || !recs.length) return;
+      const known = new Set(uploadsRef.current.map(function(u) {
+        return u.uploadId;
+      }));
+      const add = recs.filter(function(r) {
+        return r && r.uploadId && !known.has(r.uploadId);
+      }).sort(function(a, b) {
+        return (a.createdAt || 0) - (b.createdAt || 0);
+      }).map(function(r) {
+        return {
+          uploadId: r.uploadId,
+          songId: r.songId,
+          songTitle: r.songTitle,
+          filename: r.filename,
+          mimeType: r.mimeType,
+          name: r.name,
+          size: r.size,
+          createdAt: r.createdAt,
+          result: r.result || null,
+          phase: "queued",
+          stored: true,
+          attempts: 0
+        };
+      });
+      if (add.length) setUploadList(uploadsRef.current.concat(add));
+      kickUploads();
+    }).catch(function(e) {
+      console.warn("Couldn't read saved uploads:", e);
+    });
+    function onOnline() {
+      retryUploadsNow();
+    }
+    function onVisible() {
+      if (document.visibilityState === "visible") retryUploadsNow();
+    }
+    window.addEventListener("online", onOnline);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("online", onOnline);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [loaded]);
+  const uploadCtxValue = { startUpload: startBackgroundUpload };
   function saveReloadSnapshot() {
     try {
       const snapshot = {
@@ -2450,7 +2850,7 @@ function App() {
       onClose: () => setShowDriveReviewScreen(false),
       onOpenFolderSettings: () => setShowDriveFolderSettings(true),
       onScan: async () => {
-        const scanResult = await scanDriveLinksRemote();
+        const scanResult = await scanDriveLinksRemote(songsRef.current);
         if (scanResult && scanResult.error) {
           alert("Drive scan problem:\n\n" + scanResult.error);
           return;
@@ -2464,49 +2864,15 @@ function App() {
             alreadyLinked: scanResult.alreadyLinked || 0,
             staleRemoved: scanResult.staleRemoved || 0
           });
-          if (scanResult.allSongRecordings && scanResult.allSongRecordings.length > 0) {
-            const client = getSupabaseClient();
-            for (const entry of scanResult.allSongRecordings) {
-              try {
-                const cur = await client.from("songs").select("recording").eq("id", entry.id).single();
-                const supaRecs = cur.data && cur.data.recording || [];
-                const sheetRecs = entry.recording || [];
-                const sheetFileIds = /* @__PURE__ */ new Set();
-                for (const r of sheetRecs) {
-                  const fid = driveFileIdFromUrl(r.url);
-                  if (fid) sheetFileIds.add(fid);
-                }
-                let merged = supaRecs.filter((r) => {
-                  const fid = driveFileIdFromUrl(r.url);
-                  if (!fid) return true;
-                  return sheetFileIds.has(fid);
-                });
-                const existingIds = /* @__PURE__ */ new Set();
-                for (const r of merged) {
-                  const fid = driveFileIdFromUrl(r.url);
-                  if (fid) existingIds.add(fid);
-                }
-                let added = 0;
-                for (const r of sheetRecs) {
-                  const fid = driveFileIdFromUrl(r.url);
-                  if (fid && existingIds.has(fid)) continue;
-                  if (!fid && merged.some((s) => s.url === r.url)) continue;
-                  merged.push(r);
-                  added++;
-                }
-                const removed = supaRecs.length - (merged.length - added);
-                if (added > 0 || removed > 0) {
-                  await supabaseCall(
-                    "driveScanSync",
-                    () => saveSongPatchToSupabase({ id: entry.id, recording: merged })
-                  );
-                }
-              } catch (e) {
-                console.warn("Failed to sync recordings to Supabase:", entry.id, e);
-              }
-            }
+          if (scanResult.toAdd || scanResult.staleFileIds) {
+            (songsRef.current || []).forEach((s) => {
+              const recs = s.recording || [];
+              const next = mergeDriveScanIntoRecordings(recs, (scanResult.toAdd || {})[s.id], scanResult.staleFileIds);
+              if (next !== recs) updateSong(s.id, { recording: next });
+            });
+          } else {
+            refreshAllData(false);
           }
-          refreshAllData(false);
         } else {
           alert("No Drive folder is saved yet \u2014 open Drive folder settings and save the folder link again.");
         }
@@ -2705,7 +3071,7 @@ function App() {
       },
       onClose: () => setShowCopySheet(false)
     }
-  ), /* @__PURE__ */ React.createElement(UploadToast, { upload: bgUpload, onRetry: retryBgUpload, onDismiss: dismissBgUpload }), toast && /* @__PURE__ */ React.createElement("div", { style: styles.toast }, toast)));
+  ), /* @__PURE__ */ React.createElement(UploadToast, { uploads, onRetry: retryUpload, onRetryNow: retryUploadsNow, onDiscard: discardUpload, onSaveCopy: saveUploadCopy }), toast && /* @__PURE__ */ React.createElement("div", { style: styles.toast }, toast)));
 }
 function ViewPickerModal({ views, currentViewId, onPick }) {
   return /* @__PURE__ */ React.createElement("div", { style: styles.modalBackdrop }, /* @__PURE__ */ React.createElement("div", { style: styles.modalCard }, /* @__PURE__ */ React.createElement("div", { style: styles.modalTitle }, "Who's viewing?"), /* @__PURE__ */ React.createElement("div", { style: styles.modalSubtitle }, "Pick your view for this session."), /* @__PURE__ */ React.createElement("div", { style: styles.viewPickerList }, VIEW_IDS.map((vid) => {
@@ -3812,6 +4178,7 @@ function AddRecordingSheet({ songId, songTitle, onClose }) {
   const [name, setName] = useState("Recording");
   const [phase, setPhase] = useState("idle");
   const [errMsg, setErrMsg] = useState("");
+  const [saving, setSaving] = useState(false);
   useEffect(() => {
     return () => {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -3838,15 +4205,15 @@ function AddRecordingSheet({ songId, songTitle, onClose }) {
     setPhase("picked");
     setErrMsg("");
   }
-  function upload() {
-    if (!file || uploadCtx && uploadCtx.busy) return;
-    var started = uploadCtx && uploadCtx.startUpload(songId, songTitle, file, {
-      songId,
+  async function upload() {
+    if (!file || saving || !uploadCtx) return;
+    setSaving(true);
+    await uploadCtx.startUpload(songId, songTitle, file, {
       filename: file.name || "",
       mimeType: file.type || "audio/mp4",
       name: name.trim() || "Recording"
     });
-    if (started) onClose();
+    onClose();
   }
   return /* @__PURE__ */ React.createElement("div", { style: styles.modalBackdrop, onClick: onClose }, /* @__PURE__ */ React.createElement("div", { style: styles.modalCard, onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { style: styles.modalTitle }, "Add audio"), /* @__PURE__ */ React.createElement("div", { style: styles.manualLinkFileName }, songTitle), /* @__PURE__ */ React.createElement(
     "input",
@@ -3876,9 +4243,9 @@ function AddRecordingSheet({ songId, songTitle, onClose }) {
     "button",
     {
       onClick: upload,
-      style: { ...styles.modalConfirm, ...uploadCtx && uploadCtx.busy ? { opacity: 0.6, pointerEvents: "none" } : {} }
+      style: { ...styles.modalConfirm, ...saving ? { opacity: 0.6, pointerEvents: "none" } : {} }
     },
-    uploadCtx && uploadCtx.busy ? "Upload in progress\u2026" : "Upload"
+    saving ? "Saving\u2026" : "Upload"
   ))), /* @__PURE__ */ React.createElement("button", { onClick: onClose, style: { ...styles.modalCancel, width: "100%", flex: "none", marginTop: 14 } }, file ? "Cancel" : "Close")));
 }
 function humanSize(bytes) {
@@ -3965,6 +4332,8 @@ function RecordSheet({ songId, songTitle, existingNames, onClose, onChooseFile }
   const [errMsg, setErrMsg] = useState("");
   const [armCancel, setArmCancel] = useState(false);
   const [armRedo, setArmRedo] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [armClose, setArmClose] = useState(false);
   const mrRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
@@ -4088,9 +4457,9 @@ function RecordSheet({ songId, songTitle, existingNames, onClose, onChooseFile }
   const cleanName = name.trim() || "Recording";
   const base = cleanName.toLowerCase().indexOf(song.toLowerCase()) === 0 ? cleanName : song + " " + cleanName;
   const previewFilename = base + "." + recMimeToExt(mimeType || pickRecMime());
-  const canDismiss = phase === "idle" || phase === "denied" || phase === "review" || phase === "error";
-  function save() {
-    if (!blob || uploadCtx && uploadCtx.busy) return;
+  const canDismiss = !saving && !blob && (phase === "idle" || phase === "denied" || phase === "error");
+  async function save() {
+    if (!blob || saving || !uploadCtx) return;
     if (blob.size > MAX_UPLOAD_BYTES) {
       setPhase("error");
       setErrMsg(
@@ -4098,13 +4467,13 @@ function RecordSheet({ songId, songTitle, existingNames, onClose, onChooseFile }
       );
       return;
     }
-    var started = uploadCtx && uploadCtx.startUpload(songId, songTitle, blob, {
-      songId,
+    setSaving(true);
+    await uploadCtx.startUpload(songId, songTitle, blob, {
       filename: cleanName + "." + recMimeToExt(mimeType),
       mimeType: mimeType || "audio/mp4",
       name: cleanName
     });
-    if (started) onClose();
+    onClose();
   }
   const bigCircle = {
     width: 92,
@@ -4153,7 +4522,17 @@ function RecordSheet({ songId, songTitle, existingNames, onClose, onChooseFile }
       style: { ...styles.modalCancel, color: "var(--needs)", borderColor: "rgba(217,112,74,0.5)" }
     },
     armRedo ? "Tap again \u2014 discard" : "Re-record"
-  ), /* @__PURE__ */ React.createElement("button", { onClick: save, style: { ...styles.modalConfirm, ...uploadCtx && uploadCtx.busy ? { opacity: 0.6, pointerEvents: "none" } : {} } }, uploadCtx && uploadCtx.busy ? "Upload in progress\u2026" : phase === "error" ? "Try again" : "Save"))), (phase === "review" || phase === "error") && /* @__PURE__ */ React.createElement("button", { onClick: onClose, style: { ...styles.modalCancel, width: "100%", flex: "none", marginTop: 12 } }, "Discard & close")));
+  ), /* @__PURE__ */ React.createElement("button", { onClick: save, style: { ...styles.modalConfirm, ...saving ? { opacity: 0.6, pointerEvents: "none" } : {} } }, saving ? "Saving\u2026" : phase === "error" ? "Try again" : "Save"))), (phase === "review" || phase === "error") && !saving && /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      onClick: () => {
+        if (!blob || armClose) onClose();
+        else setArmClose(true);
+      },
+      style: { ...styles.modalCancel, width: "100%", flex: "none", marginTop: 12, ...armClose ? { color: "var(--needs)", borderColor: "rgba(217,112,74,0.5)" } : {} }
+    },
+    armClose ? "Tap again \u2014 discard recording" : blob ? "Discard & close" : "Close"
+  )));
 }
 function ArrangementTable({ rows, onChange, colPct, onColPctChange, editMode, onFieldBlur }) {
   const rowsById = useMemo(() => Object.fromEntries(rows.map((r) => [r.id, r])), [rows]);
