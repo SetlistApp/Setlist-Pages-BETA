@@ -541,7 +541,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.7-beta2";
+const APP_VERSION = "2.0.7-beta3";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -560,8 +560,17 @@ function claimLegacyPendingEdits(raw, now, channel) {
 function shouldClearLegacyPendingEdits(channel) {
   return channel === "sync-prod";
 }
-function versionBase(v) {
-  return String(v || "").split("-")[0].split(".").slice(0, 3).join(".");
+function readRecoverableExtras(raw, now) {
+  try {
+    var parsed = JSON.parse(raw);
+    if (!parsed || !parsed.savedAt || now - parsed.savedAt > PENDING_EDITS_MAX_AGE_MS) return { bases: {}, newIds: [] };
+    return {
+      bases: parsed.bases && typeof parsed.bases === "object" ? parsed.bases : {},
+      newIds: Array.isArray(parsed.newIds) ? parsed.newIds : []
+    };
+  } catch (e) {
+    return { bases: {}, newIds: [] };
+  }
 }
 const GS_CALL_TIMEOUT_MS = 14e3;
 const GS_TRANSPORT_EXTRA_MS = 3e4;
@@ -774,63 +783,77 @@ async function loadAllDataFromSupabase() {
     isBeta: channelName.indexOf("beta") !== -1
   };
 }
-async function saveSongPatchToSupabase(patch, viewerName) {
+async function saveSongPatchToSupabase(patch, viewerName, opts) {
+  opts = opts || {};
+  var bases = opts.bases || {};
   var client = getSupabaseClient();
   var id = patch.id;
-  var dbUpdate = {};
-  var customUpdate = {};
-  for (var k in patch) {
-    if (k === "id") continue;
-    if (SUPABASE_SONG_COLUMNS.has(k)) {
-      dbUpdate[k] = patch[k];
-    } else {
-      customUpdate[k] = patch[k];
-    }
-  }
-  var changedFields = Object.keys(patch).filter(function(k2) {
-    return k2 !== "id";
+  var changedFields = Object.keys(patch).filter(function(k) {
+    return k !== "id";
   });
-  var oldValues = {};
-  var songTitle = null;
-  var oldRow = null;
-  if (changedFields.length > 0) {
-    var selectCols = ["title", "customFields"];
-    changedFields.forEach(function(k2) {
-      if (SUPABASE_SONG_COLUMNS.has(k2) && selectCols.indexOf(k2) === -1) selectCols.push(k2);
+  if (changedFields.length === 0) return {};
+  var selectCols = ["title", "customFields", "updated_at"];
+  changedFields.forEach(function(k) {
+    if (SUPABASE_SONG_COLUMNS.has(k) && selectCols.indexOf(k) === -1) selectCols.push(k);
+  });
+  for (var attempt = 0; attempt < 4; attempt++) {
+    var oldRes = await client.from("songs").select(selectCols.join(",")).eq("id", id).maybeSingle();
+    if (oldRes.error) throw new Error(oldRes.error.message);
+    var oldRow = oldRes.data || null;
+    if (!oldRow && !opts.isNew) return { deleted: true };
+    var dbUpdate = {};
+    var customUpdate = {};
+    var merged = {};
+    var finalValues = {};
+    changedFields.forEach(function(k) {
+      var val = patch[k];
+      if (oldRow && SONG_LIST_FIELDS.indexOf(k) !== -1 && Object.prototype.hasOwnProperty.call(bases, k)) {
+        var theirs = SUPABASE_SONG_COLUMNS.has(k) ? oldRow[k] : (oldRow.customFields || {})[k];
+        var m = mergeListThreeWay(bases[k], val, theirs);
+        if (!sameList(m, val)) merged[k] = m;
+        val = m;
+      }
+      finalValues[k] = val;
+      if (SUPABASE_SONG_COLUMNS.has(k)) dbUpdate[k] = val;
+      else customUpdate[k] = val;
     });
-    var oldRes = await client.from("songs").select(selectCols.join(",")).eq("id", id).single();
-    oldRow = oldRes.data || null;
-    if (oldRow) {
-      songTitle = oldRow.title || null;
-      changedFields.forEach(function(k2) {
-        if (SUPABASE_SONG_COLUMNS.has(k2)) {
-          oldValues[k2] = oldRow[k2];
-        } else if (oldRow.customFields) {
-          oldValues[k2] = oldRow.customFields[k2];
-        }
-      });
+    if (Object.keys(customUpdate).length > 0) {
+      dbUpdate.customFields = Object.assign({}, oldRow && oldRow.customFields || {}, customUpdate);
     }
+    dbUpdate.updated_at = (/* @__PURE__ */ new Date()).toISOString();
+    if (!oldRow) {
+      var ins = await client.from("songs").insert(Object.assign({ id }, dbUpdate));
+      if (ins.error) {
+        if (ins.error.code === "23505") {
+          opts = Object.assign({}, opts, { isNew: false });
+          continue;
+        }
+        throw new Error(ins.error.message);
+      }
+      logSongChanges(id, finalValues.title || null, viewerName, changedFields, {}, finalValues);
+      return { merged };
+    }
+    var q = client.from("songs").update(dbUpdate).eq("id", id);
+    if (oldRow.updated_at) q = q.eq("updated_at", oldRow.updated_at);
+    var res = await q.select("id");
+    if (res.error) throw new Error(res.error.message);
+    if (!res.data || res.data.length === 0) continue;
+    var oldValues = {};
+    changedFields.forEach(function(k) {
+      oldValues[k] = SUPABASE_SONG_COLUMNS.has(k) ? oldRow[k] : (oldRow.customFields || {})[k];
+    });
+    logSongChanges(id, oldRow.title || null, viewerName, changedFields, oldValues, finalValues);
+    return { merged };
   }
-  if (Object.keys(customUpdate).length > 0) {
-    var existingCustom = oldRow && oldRow.customFields || {};
-    dbUpdate.customFields = Object.assign({}, existingCustom, customUpdate);
-  }
-  dbUpdate.updated_at = (/* @__PURE__ */ new Date()).toISOString();
-  var res = await client.from("songs").upsert(
-    Object.assign({ id }, dbUpdate),
-    { onConflict: "id" }
-  );
-  if (res.error) throw new Error(res.error.message);
+  throw new Error("Song kept changing during save \u2014 will retry");
+}
+function logSongChanges(id, songTitle, viewerName, fields, oldValues, newValues) {
   var changes = [];
-  changedFields.forEach(function(k2) {
-    var oldVal = oldValues[k2];
-    var newVal = patch[k2];
-    if (JSON.stringify(oldVal) === JSON.stringify(newVal)) return;
-    changes.push({ field: k2, oldValue: oldVal, newValue: newVal });
+  fields.forEach(function(k) {
+    if (JSON.stringify(oldValues[k]) === JSON.stringify(newValues[k])) return;
+    changes.push({ field: k, oldValue: oldValues[k], newValue: newValues[k] });
   });
-  if (changes.length > 0) {
-    logChanges("song", id, songTitle, viewerName, changes);
-  }
+  if (changes.length > 0) logChanges("song", id, songTitle, viewerName, changes);
 }
 async function deleteOneSongFromSupabase(id) {
   var client = getSupabaseClient();
@@ -853,13 +876,28 @@ async function saveSetlistToSupabase(setlist) {
   var res = await client.from("setlists").upsert(row, { onConflict: "id" });
   if (res.error) throw new Error(res.error.message);
 }
-async function saveSetlistSetsToSupabase(id, sets) {
+async function saveSetlistSetsToSupabase(id, sets, base) {
   var client = getSupabaseClient();
-  var res = await client.from("setlists").update({
-    sets,
-    updated_at: (/* @__PURE__ */ new Date()).toISOString()
-  }).eq("id", id);
-  if (res.error) throw new Error(res.error.message);
+  if (!base) {
+    var plain = await client.from("setlists").update({
+      sets,
+      updated_at: (/* @__PURE__ */ new Date()).toISOString()
+    }).eq("id", id);
+    if (plain.error) throw new Error(plain.error.message);
+    return sets;
+  }
+  for (var attempt = 0; attempt < 4; attempt++) {
+    var cur = await client.from("setlists").select("sets,updated_at").eq("id", id).maybeSingle();
+    if (cur.error) throw new Error(cur.error.message);
+    if (!cur.data) return sets;
+    var next = mergeSetlistSets(base, sets, cur.data.sets || []);
+    var q = client.from("setlists").update({ sets: next, updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", id);
+    if (cur.data.updated_at) q = q.eq("updated_at", cur.data.updated_at);
+    var res = await q.select("id");
+    if (res.error) throw new Error(res.error.message);
+    if (res.data && res.data.length) return next;
+  }
+  throw new Error("Setlist kept changing during save \u2014 will retry");
 }
 async function deleteSetlistFromSupabase(id) {
   var client = getSupabaseClient();
@@ -1062,9 +1100,9 @@ async function loadAllData() {
     throw err;
   }
 }
-function saveOneSongRemote(patch, viewerName) {
+function saveOneSongRemote(patch, viewerName, opts) {
   return supabaseCall("saveSongPatch", function() {
-    return saveSongPatchToSupabase(patch, viewerName);
+    return saveSongPatchToSupabase(patch, viewerName, opts);
   });
 }
 function deleteOneSongRemote(id) {
@@ -1082,9 +1120,9 @@ function saveSetlistRemote(setlist) {
     return saveSetlistToSupabase(setlist);
   });
 }
-function saveSetlistSetsRemote(id, sets) {
+function saveSetlistSetsRemote(id, sets, base) {
   return supabaseCall("saveSetlistSets", function() {
-    return saveSetlistSetsToSupabase(id, sets);
+    return saveSetlistSetsToSupabase(id, sets, base);
   });
 }
 function deleteSetlistRemote(id) {
@@ -1142,6 +1180,124 @@ function driveFileIdFromUrl(url) {
   const s = String(url);
   const m = s.match(/\/file\/d\/([-\w]{20,})/) || s.match(/[?&]id=([-\w]{20,})/) || s.match(/^([-\w]{20,})$/);
   return m ? m[1] : "";
+}
+const SONG_LIST_FIELDS = ["recording", "links", "arrangementRows", "alexTodos", "nickTodos", "calebTodos", "danTodos"];
+function listItemKey(item) {
+  if (item && typeof item === "object") {
+    return item.id != null && item.id !== "" ? "id:" + item.id : "v:" + stableStringify(item);
+  }
+  return "v:" + String(item);
+}
+function mergeListThreeWay(base, mine, theirs) {
+  base = Array.isArray(base) ? base : [];
+  mine = Array.isArray(mine) ? mine : [];
+  theirs = Array.isArray(theirs) ? theirs : [];
+  function mapOf(list) {
+    const m = /* @__PURE__ */ new Map();
+    list.forEach(function(x) {
+      const k = listItemKey(x);
+      if (!m.has(k)) m.set(k, x);
+    });
+    return m;
+  }
+  const B = mapOf(base), M = mapOf(mine), T = mapOf(theirs);
+  const same = function(a, b) {
+    return stableStringify(a) === stableStringify(b);
+  };
+  const out = [];
+  const used = /* @__PURE__ */ new Set();
+  mine.forEach(function(x) {
+    const k = listItemKey(x);
+    if (used.has(k)) return;
+    if (B.has(k) && !T.has(k) && same(x, B.get(k))) return;
+    let v = x;
+    if (B.has(k) && T.has(k) && same(x, B.get(k))) v = T.get(k);
+    out.push(v);
+    used.add(k);
+  });
+  theirs.forEach(function(x, i) {
+    const k = listItemKey(x);
+    if (used.has(k)) return;
+    if (B.has(k) && !M.has(k) && same(x, B.get(k))) return;
+    const indexIn = function(item) {
+      const key = listItemKey(item);
+      return out.findIndex(function(o) {
+        return listItemKey(o) === key;
+      });
+    };
+    let hasLater = false;
+    for (let j = i + 1; j < theirs.length; j++) {
+      if (indexIn(theirs[j]) !== -1) {
+        hasLater = true;
+        break;
+      }
+    }
+    let pos = hasLater ? 0 : out.length;
+    if (hasLater) {
+      for (let j = i - 1; j >= 0; j--) {
+        const idx = indexIn(theirs[j]);
+        if (idx !== -1) {
+          pos = idx + 1;
+          break;
+        }
+      }
+      while (pos < out.length && !B.has(listItemKey(out[pos])) && !T.has(listItemKey(out[pos]))) pos++;
+    }
+    out.splice(pos, 0, x);
+    used.add(k);
+  });
+  return out;
+}
+function sameList(a, b) {
+  return stableStringify(a || []) === stableStringify(b || []);
+}
+function mergeSetlistSets(base, mine, theirs) {
+  function byName(sets) {
+    const m = {};
+    (sets || []).forEach(function(s) {
+      if (s && s.name != null && !m[s.name]) m[s.name] = s.songIds || [];
+    });
+    return m;
+  }
+  const B = byName(base), T = byName(theirs);
+  const mineSetOf = {};
+  (mine || []).forEach(function(s) {
+    (s.songIds || []).forEach(function(id) {
+      if (!mineSetOf[id]) mineSetOf[id] = s.name;
+    });
+  });
+  const seen = /* @__PURE__ */ new Set();
+  return (mine || []).map(function(s) {
+    const b = B[s.name] || [];
+    const t = T[s.name] || b;
+    const ids = mergeListThreeWay(b, s.songIds || [], t).filter(function(id) {
+      if (mineSetOf[id] && mineSetOf[id] !== s.name) return false;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    return Object.assign({}, s, { songIds: ids });
+  });
+}
+let _reloadHolds = 0;
+let _pendingReload = null;
+function holdAutoReload() {
+  _reloadHolds++;
+  let released = false;
+  return function release() {
+    if (released) return;
+    released = true;
+    _reloadHolds--;
+    if (_reloadHolds === 0 && _pendingReload) {
+      const run = _pendingReload;
+      _pendingReload = null;
+      run();
+    }
+  };
+}
+function runWhenReloadAllowed(fn) {
+  if (_reloadHolds > 0) _pendingReload = fn;
+  else fn();
 }
 function addRecordingLinkOnce(recs, link) {
   const list = Array.isArray(recs) ? recs : [];
@@ -1684,7 +1840,19 @@ function App() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [loaded]);
-  const uploadCtxValue = { startUpload: startBackgroundUpload };
+  function removeDriveFileEverywhere(fileId) {
+    if (!fileId) return;
+    (songsRef.current || []).forEach((s) => {
+      ["recording", "links"].forEach((f) => {
+        const list = Array.isArray(s[f]) ? s[f] : [];
+        const next = list.filter((l) => driveFileIdFromUrl(l && l.url) !== fileId);
+        if (next.length !== list.length) updateSong(s.id, { [f]: next });
+      });
+    });
+  }
+  const uploadCtxValue = { startUpload: startBackgroundUpload, removeDriveFileEverywhere };
+  const saveReloadSnapshotRef = useRef(null);
+  saveReloadSnapshotRef.current = saveReloadSnapshot;
   function saveReloadSnapshot() {
     try {
       const snapshot = {
@@ -1808,14 +1976,34 @@ function App() {
     songSaveTimers.current[id] = { ...entry, inFlight: true, inFlightSince: Date.now() };
     setSaveState("saving");
     var viewerName = views && views[activeViewId] ? views[activeViewId].name : null;
-    saveOneSongRemote(patchBeingSaved, viewerName).then(() => {
+    saveOneSongRemote(patchBeingSaved, viewerName, { bases: entry.bases || {}, isNew: !!entry.isNew }).then((result) => {
       reportSaveSuccess();
       const current = songSaveTimers.current[id];
       if (!current) return;
+      if (result && result.deleted) {
+        if (current.debounce) clearTimeout(current.debounce);
+        if (current.retry) clearTimeout(current.retry);
+        delete songSaveTimers.current[id];
+        persistPendingEdits();
+        setSongs((prev) => prev.filter((s) => s.id !== id));
+        setOpenId((o) => o === id ? null : o);
+        return;
+      }
+      const merged = result && result.merged || {};
+      const nextBases = { ...current.bases || {} };
+      SONG_LIST_FIELDS.forEach((f) => {
+        if (Object.prototype.hasOwnProperty.call(patchBeingSaved, f)) nextBases[f] = patchBeingSaved[f];
+      });
+      const show = {};
+      Object.keys(merged).forEach((f) => {
+        const newer = current.pendingPatch && current.pendingPatch !== patchBeingSaved && current.pendingPatch[f] !== patchBeingSaved[f];
+        if (!newer) show[f] = merged[f];
+      });
+      if (Object.keys(show).length) setSongs((prev) => prev.map((s) => s.id === id ? { ...s, ...show } : s));
       if (current.pendingPatch === patchBeingSaved) {
-        songSaveTimers.current[id] = { ...current, pendingPatch: null, retry: null, retryCount: 0, inFlight: false };
+        songSaveTimers.current[id] = { ...current, pendingPatch: null, bases: {}, isNew: false, retry: null, retryCount: 0, inFlight: false };
       } else {
-        songSaveTimers.current[id] = { ...current, retryCount: 0, inFlight: false };
+        songSaveTimers.current[id] = { ...current, bases: nextBases, isNew: false, retryCount: 0, inFlight: false };
         attemptSongSaveFor(id);
       }
       persistPendingEdits();
@@ -1834,30 +2022,142 @@ function App() {
       persistPendingEdits();
     });
   }
+  const unrecoveredEditsRef = useRef(null);
   function persistPendingEdits() {
     try {
+      const held = unrecoveredEditsRef.current;
       const patches = {};
+      const bases = {};
+      const newIds = [];
+      if (held) {
+        for (const id in held.patches) patches[id] = held.patches[id];
+        for (const id in held.bases) bases[id] = held.bases[id];
+        held.newIds.forEach((id) => {
+          if (held.patches[id]) newIds.push(id);
+        });
+      }
       for (const id in songSaveTimers.current) {
         const t = songSaveTimers.current[id];
-        if (t && t.pendingPatch) patches[id] = t.pendingPatch;
+        if (!t || !t.pendingPatch) continue;
+        patches[id] = { ...patches[id] || {}, ...t.pendingPatch };
+        if (t.bases && Object.keys(t.bases).length) bases[id] = { ...t.bases || {}, ...bases[id] || {} };
+        if (t.isNew && newIds.indexOf(id) === -1) newIds.push(id);
       }
       if (Object.keys(patches).length) {
-        localStorage.setItem(PENDING_EDITS_KEY, JSON.stringify({ savedAt: Date.now(), patches }));
+        localStorage.setItem(PENDING_EDITS_KEY, JSON.stringify({ savedAt: Date.now(), patches, bases, newIds }));
       } else {
         localStorage.removeItem(PENDING_EDITS_KEY);
       }
     } catch (e) {
     }
   }
-  function scheduleSongSave(id, patch) {
+  function readHeldEdits() {
+    let patches = null;
+    let extras = { bases: {}, newIds: [] };
+    let legacyClaimed = false;
+    try {
+      const raw = localStorage.getItem(PENDING_EDITS_KEY);
+      if (raw) {
+        patches = readRecoverablePatches(raw, Date.now());
+        if (patches) extras = readRecoverableExtras(raw, Date.now());
+        else localStorage.removeItem(PENDING_EDITS_KEY);
+      }
+    } catch (e) {
+    }
+    try {
+      const channel = storageChannel();
+      const legacyRaw = localStorage.getItem(LEGACY_PENDING_EDITS_KEY);
+      if (legacyRaw && shouldClearLegacyPendingEdits(channel)) {
+        const legacy = claimLegacyPendingEdits(legacyRaw, Date.now(), channel);
+        if (legacy) {
+          const merged = { ...legacy };
+          if (patches) {
+            for (const id in patches) merged[id] = { ...merged[id] || {}, ...patches[id] };
+          }
+          patches = merged;
+        }
+        legacyClaimed = true;
+      }
+    } catch (e) {
+    }
+    if (!patches && !legacyClaimed) return null;
+    return { patches: patches || {}, bases: extras.bases, newIds: extras.newIds, legacyClaimed };
+  }
+  function songsWithLocalEdits(serverSongs) {
+    const held = unrecoveredEditsRef.current;
+    const ids = new Set(serverSongs.map((s) => s.id));
+    const out = serverSongs.map((s) => {
+      let m = s;
+      if (held && held.patches[s.id]) m = { ...m, ...held.patches[s.id] };
+      const t = songSaveTimers.current[s.id];
+      if (t && t.pendingPatch) m = { ...m, ...t.pendingPatch };
+      return m;
+    });
+    const unsavedNew = {};
+    if (held) held.newIds.forEach((id) => {
+      if (held.patches[id]) unsavedNew[id] = { ...held.patches[id] };
+    });
+    for (const id in songSaveTimers.current) {
+      const t = songSaveTimers.current[id];
+      if (t && t.isNew && t.pendingPatch) unsavedNew[id] = { ...unsavedNew[id] || {}, ...t.pendingPatch };
+    }
+    for (const id in unsavedNew) {
+      if (!ids.has(id)) out.push(normalizeSong({ ...BLANK_SONG, ...unsavedNew[id], id }));
+    }
+    return out;
+  }
+  function recoverHeldEdits(serverSongs) {
+    const held = unrecoveredEditsRef.current;
+    if (!held) return;
+    const ids = new Set(serverSongs.map((s) => s.id));
+    Object.keys(held.patches).forEach((id) => {
+      const isNew = held.newIds.indexOf(id) !== -1 && !ids.has(id);
+      if (!ids.has(id) && !isNew) return;
+      const existing = songSaveTimers.current[id] || {};
+      songSaveTimers.current[id] = {
+        ...existing,
+        pendingPatch: { ...held.patches[id], ...existing.pendingPatch || {}, id },
+        bases: { ...existing.bases || {}, ...(held.bases || {})[id] || {} },
+        isNew: !!existing.isNew || isNew,
+        debounce: existing.debounce || null,
+        retry: existing.retry || null
+      };
+    });
+    unrecoveredEditsRef.current = null;
+    persistPendingEdits();
+    if (held.legacyClaimed) {
+      try {
+        localStorage.removeItem(LEGACY_PENDING_EDITS_KEY);
+      } catch (e) {
+      }
+    }
+    setTimeout(() => {
+      for (const id in songSaveTimers.current) {
+        const t = songSaveTimers.current[id];
+        if (t && t.pendingPatch && !t.inFlight) attemptSongSaveFor(id);
+      }
+    }, 0);
+  }
+  function scheduleSongSave(id, patch, opts) {
     const existing = songSaveTimers.current[id] || {};
     if (existing.debounce) clearTimeout(existing.debounce);
     if (existing.retry) clearTimeout(existing.retry);
     const mergedPatch = { ...existing.pendingPatch || {}, ...patch, id };
+    const bases = { ...existing.bases || {} };
+    const cur = songsRef.current && songsRef.current.find((s) => s.id === id);
+    if (cur) {
+      SONG_LIST_FIELDS.forEach((f) => {
+        if (Object.prototype.hasOwnProperty.call(patch, f) && !Object.prototype.hasOwnProperty.call(bases, f)) {
+          bases[f] = Array.isArray(cur[f]) ? cur[f] : [];
+        }
+      });
+    }
     songSaveTimers.current[id] = {
       ...existing,
       // keep inFlight / retryCount if a save is running right now
       pendingPatch: mergedPatch,
+      bases,
+      isNew: !!(existing.isNew || opts && opts.isNew),
       debounce: setTimeout(() => attemptSongSaveFor(id), EDIT_IDLE_SAVE_MS),
       retry: null
     };
@@ -1950,8 +2250,27 @@ function App() {
   function scheduleSetlistSave(setlist) {
     runSetlistSave("meta:" + setlist.id, () => saveSetlistRemote(setlist));
   }
-  function scheduleSetlistSetsSave(id, sets) {
-    runSetlistSave("sets:" + id, () => saveSetlistSetsRemote(id, sets));
+  function scheduleSetlistSetsSave(id, sets, prevSets) {
+    const key = "sets:" + id;
+    const entry = setlistSaveTimers.current[key] || (setlistSaveTimers.current[key] = {});
+    if (entry.base === void 0) entry.base = prevSets || null;
+    entry.latestSets = sets;
+    const run = () => {
+      const base = entry.base;
+      return saveSetlistSetsRemote(id, sets, base).then((written) => {
+        entry.base = sets;
+        if (entry.latestSets === sets && written && !sameList(written, sets)) {
+          setSetlists((prev) => prev.map((sl) => sl.id === id ? { ...sl, sets: written } : sl));
+        }
+        if (entry.latestSets === sets) entry.base = void 0;
+      });
+    };
+    runSetlistSave(key, () => {
+      const p = (entry.chain || Promise.resolve()).catch(() => {
+      }).then(run);
+      entry.chain = p;
+      return p;
+    });
   }
   useEffect(() => {
     let cancelled = false;
@@ -1969,6 +2288,7 @@ function App() {
         }
       } catch (e) {
       }
+      unrecoveredEditsRef.current = readHeldEdits();
       let usedCache = false;
       try {
         const cacheRaw = localStorage.getItem(CACHE_KEY);
@@ -1978,7 +2298,7 @@ function App() {
             const cd = { ...cp, songs: cp.songs.map(normalizeSong) };
             if (!cancelled) {
               setIsBeta(!!cd.isBeta);
-              setSongs(cd.songs);
+              setSongs(songsWithLocalEdits(cd.songs));
               setSectionOrder(cd.sectionOrder);
               setSongOrder(cd.songOrder);
               const cSetlists = Array.isArray(cd.setlists) ? cd.setlists : [];
@@ -2035,67 +2355,8 @@ function App() {
         if (data.dataVersion != null) dataVersionRef.current = data.dataVersion;
         setIsBeta(!!data.isBeta);
         pruneChangeLog();
-        let recovered = null;
-        let legacyClaimed = false;
-        if (!usedCache) {
-          try {
-            const raw = localStorage.getItem(PENDING_EDITS_KEY);
-            if (raw) {
-              recovered = readRecoverablePatches(raw, Date.now());
-              if (!recovered) localStorage.removeItem(PENDING_EDITS_KEY);
-            }
-          } catch (e) {
-          }
-          try {
-            const channel = storageChannel();
-            const legacyRaw = localStorage.getItem(LEGACY_PENDING_EDITS_KEY);
-            if (legacyRaw && shouldClearLegacyPendingEdits(channel)) {
-              const legacy = claimLegacyPendingEdits(legacyRaw, Date.now(), channel);
-              if (legacy) {
-                const merged = { ...legacy };
-                if (recovered) {
-                  for (const id in recovered) merged[id] = { ...merged[id] || {}, ...recovered[id] };
-                }
-                recovered = merged;
-              }
-              legacyClaimed = true;
-            }
-          } catch (e) {
-          }
-        }
-        const mergedSongs = data.songs.map((s) => {
-          let m = s;
-          if (recovered && recovered[s.id]) m = { ...m, ...recovered[s.id] };
-          const t = songSaveTimers.current[s.id];
-          if (t && t.pendingPatch) m = { ...m, ...t.pendingPatch };
-          return m;
-        });
-        setSongs(mergedSongs);
-        if (recovered) {
-          const songIds = new Set(data.songs.map((s) => s.id));
-          Object.keys(recovered).forEach((id) => {
-            if (!songIds.has(id)) return;
-            songSaveTimers.current[id] = {
-              pendingPatch: { ...recovered[id], id },
-              debounce: null,
-              retry: null
-            };
-          });
-          setTimeout(() => {
-            for (const id in songSaveTimers.current) {
-              if (songSaveTimers.current[id] && songSaveTimers.current[id].pendingPatch) {
-                attemptSongSaveFor(id);
-              }
-            }
-          }, 0);
-        }
-        if (legacyClaimed) {
-          persistPendingEdits();
-          try {
-            localStorage.removeItem(LEGACY_PENDING_EDITS_KEY);
-          } catch (e) {
-          }
-        }
+        setSongs(songsWithLocalEdits(data.songs));
+        recoverHeldEdits(data.songs);
         setSectionOrder(data.sectionOrder);
         setSongOrder(data.songOrder);
         const loadedSetlists = Array.isArray(data.setlists) ? data.setlists : [];
@@ -2228,12 +2489,8 @@ function App() {
         if (isManual) setManualRefreshing(false);
         return;
       }
-      const songsWithPendingApplied = data.songs.map((s) => {
-        let merged = s;
-        const t = songSaveTimers.current[s.id];
-        if (t && t.pendingPatch) merged = { ...merged, ...t.pendingPatch };
-        return merged;
-      });
+      const songsWithPendingApplied = songsWithLocalEdits(data.songs);
+      recoverHeldEdits(data.songs);
       const nextSetlists = Array.isArray(data.setlists) ? data.setlists : [];
       const nextDefaultId = data.defaultSetlistId && nextSetlists.some((sl) => sl.id === data.defaultSetlistId) ? data.defaultSetlistId : null;
       const changed = stableStringify(songsWithPendingApplied) !== stableStringify(songs) || stableStringify(data.sectionOrder) !== stableStringify(sectionOrder) || stableStringify(data.songOrder) !== stableStringify(songOrder) || stableStringify(nextSetlists) !== stableStringify(setlists) || nextDefaultId !== defaultSetlistId || stableStringify(data.sectionDefs) !== stableStringify(sectionDefs) || stableStringify(data.views) !== stableStringify(views);
@@ -2318,8 +2575,10 @@ function App() {
     function onControllerChange() {
       if (reloading) return;
       reloading = true;
-      saveReloadSnapshot();
-      forceFullReload();
+      runWhenReloadAllowed(function() {
+        saveReloadSnapshotRef.current();
+        forceFullReload();
+      });
     }
     navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
     return function() {
@@ -2610,8 +2869,9 @@ function App() {
   function persistActiveSetlistSets(nextSets) {
     if (!activeSetlistId) return;
     const sets = normalizeSets(nextSets);
-    setSetlists((prev) => prev.map((sl) => sl.id === activeSetlistId ? { ...sl, sets } : sl));
-    scheduleSetlistSetsSave(activeSetlistId, sets);
+    const prev = setlists.find((sl) => sl.id === activeSetlistId);
+    setSetlists((p) => p.map((sl) => sl.id === activeSetlistId ? { ...sl, sets } : sl));
+    scheduleSetlistSetsSave(activeSetlistId, sets, prev ? prev.sets : null);
   }
   function setsFromMap(map, names) {
     const clean = (names || slSectionOrder).filter((n) => n && n !== "Not In Show");
@@ -2625,7 +2885,7 @@ function App() {
     const id = uid();
     const newSong = { ...BLANK_SONG, id, section: "", title: "New Song" };
     setSongs((prev) => [...prev, newSong]);
-    scheduleSongSave(id, newSong);
+    scheduleSongSave(id, newSong, { isNew: true });
     if (activeTab === "Setlist" && activeSetlistId) {
       const first = slSectionOrder[0];
       persistActiveSetlistSets(setsFromMap({ ...slSongOrder, [first]: [...slSongOrder[first] || [], id] }, slSectionOrder));
@@ -2638,7 +2898,7 @@ function App() {
       (prev) => prev.map((sl) => {
         const sets = (sl.sets || []).map((sec) => ({ ...sec, songIds: (sec.songIds || []).filter((x) => x !== id) }));
         const had = (sl.sets || []).some((sec) => (sec.songIds || []).includes(id));
-        if (had) scheduleSetlistSetsSave(sl.id, sets);
+        if (had) scheduleSetlistSetsSave(sl.id, sets, sl.sets);
         return had ? { ...sl, sets } : sl;
       })
     );
@@ -4058,6 +4318,7 @@ function Metronome({ bpm, onSetBpm }) {
   ), /* @__PURE__ */ React.createElement("button", { type: "button", style: styles.metroTap, onClick: handleTap }, "Tap")), /* @__PURE__ */ React.createElement("div", { style: styles.metroHint }, hint));
 }
 function LinksListEditor({ value, onChange, onFieldBlur, songId, songTitle, hideAddLink, hideInternalButtons }) {
+  const uploadCtx = React.useContext(UploadContext);
   const links = value || [];
   const byId = useMemo(() => Object.fromEntries(links.map((l) => [l.id, l])), [links]);
   const [localOrder, setLocalOrder] = useState(links.map((l) => l.id));
@@ -4087,7 +4348,8 @@ function LinksListEditor({ value, onChange, onFieldBlur, songId, songTitle, hide
         setDelBusyId(null);
         return;
       }
-      onChange((value || []).filter((x) => x.id !== link.id));
+      if (uploadCtx && uploadCtx.removeDriveFileEverywhere && fid) uploadCtx.removeDriveFileEverywhere(fid);
+      else onChange((value || []).filter((x) => x.id !== link.id));
       setDelBusyId(null);
       closeDelMenu();
     } catch (e) {
@@ -4223,6 +4485,11 @@ function AddRecordingSheet({ songId, songTitle, onClose }) {
   const [phase, setPhase] = useState("idle");
   const [errMsg, setErrMsg] = useState("");
   const [saving, setSaving] = useState(false);
+  const hasFile = !!file;
+  useEffect(() => {
+    if (!hasFile) return;
+    return holdAutoReload();
+  }, [hasFile]);
   useEffect(() => {
     return () => {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -4378,6 +4645,11 @@ function RecordSheet({ songId, songTitle, existingNames, onClose, onChooseFile }
   const [armRedo, setArmRedo] = useState(false);
   const [saving, setSaving] = useState(false);
   const [armClose, setArmClose] = useState(false);
+  const holdsReload = phase === "recording" || !!blob;
+  useEffect(() => {
+    if (!holdsReload) return;
+    return holdAutoReload();
+  }, [holdsReload]);
   const mrRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
