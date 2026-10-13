@@ -55,7 +55,7 @@
 /* Precompiled plain JavaScript — the app is shipped already-transpiled
    (no JSX, no Babel, no build step on the served side). */
 
-const { useState, useEffect, useMemo, useRef, useCallback } = React;
+const { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } = React;
 const PREF_ZOOM_KEY = "bandSetlist_manualZoom";
 function getManualZoomOverride() {
   try {
@@ -541,7 +541,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.7";
+const APP_VERSION = "2.0.7.1-beta1";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -3968,12 +3968,20 @@ function SearchResultsList({ songs, onOpen }) {
 }
 function AutoGrowTextarea({ value, onChange, onBlur, style }) {
   const ref = useRef(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = ref.current;
-    if (el) {
-      el.style.height = "0px";
-      el.style.height = el.scrollHeight + "px";
+    if (!el) return;
+    const saved = [];
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      if (p.scrollTop) saved.push([p, p.scrollTop]);
     }
+    const winY = window.scrollY;
+    el.style.height = "0px";
+    el.style.height = el.scrollHeight + "px";
+    saved.forEach(([p, top]) => {
+      if (p.scrollTop !== top) p.scrollTop = top;
+    });
+    if (window.scrollY !== winY) window.scrollTo(window.scrollX, winY);
   }, [value]);
   return /* @__PURE__ */ React.createElement("textarea", { ref, value, onChange, onBlur, rows: 1, style: { ...style, overflow: "hidden", resize: "none" } });
 }
