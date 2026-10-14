@@ -47,6 +47,16 @@
        If this fails to load (offline, CDN down) the app falls back to polling. -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"
           onerror=""></script>
+  <!-- Songwriter (lyrics editor + Write tab): a separate plain-JS app on the
+       same site, under window.SW with sw- classes. Order matters. Its word
+       lists (words.js etc.) load themselves from /Songwriter/ when needed. -->
+  <link rel="stylesheet" href="/Songwriter/styles.css">
+  <script src="/Songwriter/theory.js"></script>
+  <script src="/Songwriter/rhymes.js"></script>
+  <script src="/Songwriter/songs.js"></script>
+  <script src="/Songwriter/editor.js"></script>
+  <script src="/Songwriter/instruments.js"></script>
+  <script src="/Songwriter/app.js"></script>
 </head>
 <body>
   <div id="root"></div>
@@ -132,7 +142,7 @@ function scaleStylesheet(sheet) {
   }
   return scaled;
 }
-const TABS = ["Setlist", "Not In Show", "Originals", "All Songs"];
+const TABS = ["Setlist", "Not In Show", "Originals", "All Songs", "Write"];
 const SONG_HOME_SECTIONS = ["Set 1", "Set 2", "Not In Show"];
 const VIEW_IDS = ["view1", "view2", "view3", "view4", "view5"];
 const DEFAULT_VIEW_NAMES = ["Alex", "Nick", "Caleb", "Dan", "All"];
@@ -141,7 +151,6 @@ const BUILTIN_SECTION_DEFS = [
   { id: "tempoTimeSig", label: "Metronome", type: "metronome" },
   { id: "arrangement", label: "Arrangement", type: "arrangementTable" },
   { id: "basicChords", label: "Basic Chords", type: "textarea", mono: true },
-  { id: "chordsLyrics", label: "Lyrics", type: "textarea" },
   { id: "notes", label: "All Notes", type: "textarea" },
   { id: "danNotes", label: "Dan \u2014 Notes", type: "textarea" },
   { id: "nickNotes", label: "Nick \u2014 Notes", type: "textarea" },
@@ -153,17 +162,17 @@ const BUILTIN_SECTION_DEFS = [
   { id: "recording", label: "Recordings", type: "linksList" },
   { id: "links", label: "Links", type: "linksList" }
 ];
-const SONG_DETAIL_TABS = ["overview", "chords", "attachments"];
-const SONG_DETAIL_TAB_LABELS = { overview: "Overview", chords: "Chords / Lyrics", attachments: "Attachments" };
+const SONG_DETAIL_TABS = ["overview", "lyrics", "chords", "attachments"];
+const SONG_DETAIL_TAB_LABELS = { overview: "Overview", lyrics: "Lyrics", chords: "Chords", attachments: "Attachments" };
 const SECTION_TAB_MAP = {
   basicChords: "chords",
-  chordsLyrics: "chords",
   recording: "attachments",
   links: "attachments"
 };
 function sectionTab(id) {
   return SECTION_TAB_MAP[id] || "overview";
 }
+const RETIRED_SECTION_IDS = /* @__PURE__ */ new Set(["chordsLyrics"]);
 const DOT_COLORS = [
   { id: "auto", label: "Auto", value: null },
   { id: "ready", label: "Ready", value: "#4fae7a" },
@@ -425,7 +434,9 @@ function useArmedDelete() {
 function forceFullReload() {
   if ("caches" in window) {
     caches.keys().then(function(keys) {
-      return Promise.all(keys.map(function(k) {
+      return Promise.all(keys.filter(function(k) {
+        return k.indexOf("setlist-shell-") === 0;
+      }).map(function(k) {
         return caches.delete(k);
       }));
     }).then(function() {
@@ -541,7 +552,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.7.1";
+const APP_VERSION = "2.0.8-beta1";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -1291,13 +1302,22 @@ function holdAutoReload() {
     if (_reloadHolds === 0 && _pendingReload) {
       const run = _pendingReload;
       _pendingReload = null;
-      run();
+      runWhenReloadAllowed(run);
     }
   };
 }
+const _reloadBusyChecks = /* @__PURE__ */ new Set();
 function runWhenReloadAllowed(fn) {
   if (_reloadHolds > 0) _pendingReload = fn;
-  else fn();
+  else if (Array.from(_reloadBusyChecks).some((busy) => {
+    try {
+      return busy();
+    } catch (e) {
+      return false;
+    }
+  })) {
+    setTimeout(() => runWhenReloadAllowed(fn), 1e3);
+  } else fn();
 }
 function addRecordingLinkOnce(recs, link) {
   const list = Array.isArray(recs) ? recs : [];
@@ -2996,7 +3016,10 @@ function App() {
     scheduleViewsSave();
   }
   function reorderActiveView(newOrder) {
-    setViews((prev) => ({ ...prev, [activeViewId]: { ...prev[activeViewId], visibleSections: newOrder } }));
+    setViews((prev) => {
+      const kept = (prev[activeViewId].visibleSections || []).filter((id) => RETIRED_SECTION_IDS.has(id) && !newOrder.includes(id));
+      return { ...prev, [activeViewId]: { ...prev[activeViewId], visibleSections: [...newOrder, ...kept] } };
+    });
     scheduleViewsSave();
   }
   function hideSectionFromActiveView(id) {
@@ -3207,8 +3230,8 @@ function App() {
     }
   ), /* @__PURE__ */ React.createElement("div", { style: styles.tabRow }, TABS.map((t) => {
     const active = t === activeTab;
-    return /* @__PURE__ */ React.createElement("button", { key: t, onClick: () => setActiveTab(t), style: { ...styles.tab, ...active ? styles.tabActive : {} } }, t, /* @__PURE__ */ React.createElement("span", { style: { ...styles.tabCount, ...active ? { color: "var(--bg)" } : {} } }, tabCounts[t]));
-  })), /* @__PURE__ */ React.createElement("div", { style: styles.searchRow }, /* @__PURE__ */ React.createElement(Icon, { name: "search", size: 17, color: "var(--dim)", style: { flexShrink: 0 } }), /* @__PURE__ */ React.createElement("input", { ref: searchInputRef, value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search", style: styles.searchInput }), query && /* @__PURE__ */ React.createElement("button", { onClick: () => setQuery(""), style: styles.clearBtn, "aria-label": "Clear search" }, /* @__PURE__ */ React.createElement(Icon, { name: "x", size: 15, color: "var(--dim)" }))), query.trim() ? /* @__PURE__ */ React.createElement(SearchResultsList, { songs: searchResults, onOpen: setOpenId }) : activeTab === "Setlist" ? /* @__PURE__ */ React.createElement("div", { style: styles.list }, /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("button", { key: t, onClick: () => setActiveTab(t), style: { ...styles.tab, ...active ? styles.tabActive : {} } }, t, t === "Write" ? /* @__PURE__ */ React.createElement(Icon, { name: "pencil", size: 13, color: active ? "var(--bg)" : "var(--dim)" }) : /* @__PURE__ */ React.createElement("span", { style: { ...styles.tabCount, ...active ? { color: "var(--bg)" } : {} } }, tabCounts[t]));
+  })), activeTab === "Write" ? /* @__PURE__ */ React.createElement("div", { style: styles.writeScroll }, /* @__PURE__ */ React.createElement(SongwriterPane, { area: "chords", viewName: currentViewName })) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: styles.searchRow }, /* @__PURE__ */ React.createElement(Icon, { name: "search", size: 17, color: "var(--dim)", style: { flexShrink: 0 } }), /* @__PURE__ */ React.createElement("input", { ref: searchInputRef, value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search", style: styles.searchInput }), query && /* @__PURE__ */ React.createElement("button", { onClick: () => setQuery(""), style: styles.clearBtn, "aria-label": "Clear search" }, /* @__PURE__ */ React.createElement(Icon, { name: "x", size: 15, color: "var(--dim)" }))), query.trim() ? /* @__PURE__ */ React.createElement(SearchResultsList, { songs: searchResults, onOpen: setOpenId }) : activeTab === "Setlist" ? /* @__PURE__ */ React.createElement("div", { style: styles.list }, /* @__PURE__ */ React.createElement(
     SetlistBar,
     {
       setlist: activeSetlist,
@@ -3237,7 +3260,7 @@ function App() {
   )) : activeTab === "Not In Show" ? /* @__PURE__ */ React.createElement(NotInShowView, { songs, order: notInShowIds, onOpen: setOpenId, onAdd: addSongToActiveSetlist }) : activeTab === "Originals" ? /* @__PURE__ */ React.createElement(OriginalsView, { songs, onOpen: setOpenId, order: originalsOrder, onReorderCommit: (newOrder) => {
     setOriginalsOrder(newOrder);
     supabaseCall("saveOriginalsOrder", () => saveOriginalsOrderToSupabase(newOrder));
-  } }) : /* @__PURE__ */ React.createElement(AllSongsView, { songs, onOpen: setOpenId }), /* @__PURE__ */ React.createElement("button", { onClick: addSong, style: styles.fab, "aria-label": "Add song" }, /* @__PURE__ */ React.createElement(Icon, { name: "plus", size: 24, color: "var(--bg)" })), openSong && /* @__PURE__ */ React.createElement(
+  } }) : /* @__PURE__ */ React.createElement(AllSongsView, { songs, onOpen: setOpenId }), /* @__PURE__ */ React.createElement("button", { onClick: addSong, style: styles.fab, "aria-label": "Add song" }, /* @__PURE__ */ React.createElement(Icon, { name: "plus", size: 24, color: "var(--bg)" }))), openSong && /* @__PURE__ */ React.createElement(
     SongDetail,
     {
       song: openSong,
@@ -5582,6 +5605,7 @@ function fieldLabel(field) {
   if (field === "section") return "Set assignment";
   if (field === "tempo") return "Tempo";
   if (field === "timeSig") return "Time signature";
+  if (field === "chordsLyrics") return "Lyrics (old)";
   var def = BUILTIN_SECTION_DEFS.find(function(d) {
     return d.id === field;
   });
@@ -5722,6 +5746,41 @@ function GlobalUndoHistoryModal({ onUndo, onClose }) {
     ) : /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: "var(--ready)", fontWeight: 600, marginTop: 6, fontFamily: "var(--display)" } }, /* @__PURE__ */ React.createElement(Icon, { name: "check", size: 11, color: "var(--ready)", style: { marginRight: 2, verticalAlign: "-1px" } }), " Undone")));
   }))));
 }
+function SongwriterPane({ songId, area, viewName }) {
+  const ref = useRef(null);
+  const nameRef = useRef(viewName);
+  nameRef.current = viewName;
+  const [failed, setFailed] = useState(false);
+  const available = !failed && typeof window !== "undefined" && !!(window.SW && window.SW.app);
+  useEffect(() => {
+    if (!available || !ref.current) return;
+    let sw;
+    try {
+      sw = window.SW.app.mount(ref.current, {
+        embedded: true,
+        songId: songId || void 0,
+        area: area || void 0,
+        client: getSupabaseClient(),
+        who: () => nameRef.current,
+        assetBase: "/Songwriter/"
+      });
+    } catch (e) {
+      console.warn("Songwriter failed to start", e);
+      setFailed(true);
+      return;
+    }
+    const busy = () => !!(sw.isBusy && sw.isBusy());
+    _reloadBusyChecks.add(busy);
+    return () => {
+      _reloadBusyChecks.delete(busy);
+      sw.destroy();
+    };
+  }, [songId, area, available]);
+  if (!available) {
+    return /* @__PURE__ */ React.createElement("div", { style: styles.songwriterMissing }, "The lyrics editor didn't load. Connect to the internet and reopen the app.");
+  }
+  return /* @__PURE__ */ React.createElement("div", { ref, className: "songwriter-pane", style: styles.songwriterPane });
+}
 function SongDetail({
   song,
   onChange,
@@ -5822,7 +5881,7 @@ function SongDetail({
     }
   }, [song.id]);
   const visibleIds = useMemo(() => {
-    let ids = [...activeView.visibleSections].filter((id) => id !== "quickStats");
+    let ids = [...activeView.visibleSections].filter((id) => id !== "quickStats" && !RETIRED_SECTION_IDS.has(id));
     if (!ids.includes("key")) ids.unshift("key");
     if (!ids.includes("features")) {
       const keyIdx = ids.indexOf("key");
@@ -5830,7 +5889,7 @@ function SongDetail({
     }
     return ids;
   }, [activeView.visibleSections]);
-  const hiddenSections = allSectionIds.filter((id) => !visibleIds.includes(id) && sectionDefsById[id]);
+  const hiddenSections = allSectionIds.filter((id) => !visibleIds.includes(id) && sectionDefsById[id] && !RETIRED_SECTION_IDS.has(id));
   const [localOrder, setLocalOrder] = useState(visibleIds);
   const draggingIdRef = useRef(null);
   const rowRefs = useRef({});
@@ -6073,7 +6132,7 @@ function SongDetail({
       },
       SONG_DETAIL_TAB_LABELS[t]
     ))),
-    /* @__PURE__ */ React.createElement("div", { ref: detailScrollElRef, onScroll: handleDetailScroll, style: styles.detailScroll }, /* @__PURE__ */ React.createElement("div", { style: styles.atomicList }, displayOrder.filter((id) => sectionTab(id) === activeTab).map((id, _idx, filteredArr) => {
+    /* @__PURE__ */ React.createElement("div", { ref: detailScrollElRef, onScroll: handleDetailScroll, style: { ...styles.detailScroll, ...activeTab === "lyrics" ? styles.detailScrollFlush : {} } }, activeTab === "lyrics" && /* @__PURE__ */ React.createElement(SongwriterPane, { songId: song.id, viewName: activeView ? activeView.name : null }), /* @__PURE__ */ React.createElement("div", { style: styles.atomicList }, displayOrder.filter((id) => sectionTab(id) === activeTab).map((id, _idx, filteredArr) => {
       const def = sectionDefsById[id];
       if (!def) return null;
       const hasData = sectionHasData(def, song);
@@ -6469,6 +6528,10 @@ const rawStyles = {
   metaSelect: { flex: 1, background: "var(--surface-raised)", border: "1px solid var(--line)", borderRadius: 8, padding: "7px 6px", color: "var(--text)", fontSize: 16, fontFamily: "var(--display)", minWidth: 0 },
   metaIconBtn: { background: "var(--surface-raised)", border: "1px solid var(--line)", borderRadius: 8, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 },
   detailScroll: { flex: 1, overflowY: "auto", padding: "4px 16px 24px", touchAction: "pan-y" },
+  detailScrollFlush: { padding: 0 },
+  writeScroll: { flex: 1, overflowY: "auto", minHeight: 0 },
+  songwriterPane: { minHeight: "100%" },
+  songwriterMissing: { padding: "24px 16px", color: "var(--dim)", fontSize: 14, textAlign: "center" },
   atomicList: { display: "flex", flexDirection: "column" },
   atomicSection: { borderBottom: "1px solid var(--line)" },
   atomicHeaderRow: { display: "flex", alignItems: "center", gap: 3, padding: "9px 0" },
