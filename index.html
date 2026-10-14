@@ -552,7 +552,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.8-beta1";
+const APP_VERSION = "2.0.8-beta2";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -5754,9 +5754,11 @@ function SongwriterPane({ songId, area, viewName }) {
   const available = !failed && typeof window !== "undefined" && !!(window.SW && window.SW.app);
   useEffect(() => {
     if (!available || !ref.current) return;
+    const host = document.createElement("div");
+    ref.current.appendChild(host);
     let sw;
     try {
-      sw = window.SW.app.mount(ref.current, {
+      sw = window.SW.app.mount(host, {
         embedded: true,
         songId: songId || void 0,
         area: area || void 0,
@@ -5766,6 +5768,7 @@ function SongwriterPane({ songId, area, viewName }) {
       });
     } catch (e) {
       console.warn("Songwriter failed to start", e);
+      host.remove();
       setFailed(true);
       return;
     }
@@ -5774,6 +5777,7 @@ function SongwriterPane({ songId, area, viewName }) {
     return () => {
       _reloadBusyChecks.delete(busy);
       sw.destroy();
+      host.remove();
     };
   }, [songId, area, available]);
   if (!available) {
