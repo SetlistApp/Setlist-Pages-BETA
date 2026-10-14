@@ -441,7 +441,7 @@
       var bar = ctx.el.querySelector('[data-wordbar]');
       if (!bar) return;
       var w = ta && document.activeElement === ta ? wordAtCursor(ta) : '';
-      if (!w) { bar.hidden = true; barWord = ''; return; }
+      if (!w) { bar.hidden = true; barWord = ''; var a = scrollParent(ctx.el); if (a) a.style.scrollPaddingTop = ''; return; }
       bar.hidden = false;
       placeBar(bar);
       if (w === barWord) return;
@@ -451,18 +451,26 @@
         <span class="sw-wbtns">${[['rhymes', 'Rhymes'], ['syn', 'Syn'], ['ant', 'Ant'], ['def', 'Meaning']].map(function (t) {
           return `<button data-act="ed-word" data-arg="${t[0]}">${t[1]}</button>`; }).join('')}<button class="sw-wletter" data-act="ed-pickword" aria-label="Give this word a rhyme letter">A·B</button></span>`;
     }
-    // Newer iPhones float their own ^ ˅ ✓ bar (~50pt) just above the keyboard, over the page; a page can't
-    // move or hide it. So on iPhone/iPad the word bar sits that much higher while the keyboard is up.
-    // (On older iOS, where that bar is part of the keyboard, this leaves a small gap.)
-    var IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    var IOS_BAR_PX = 50;
-
-    /** Keep the word bar just above the keyboard (and above iOS's own bar). */
+    /** Pin the word bar to the top of the lyrics' scrolling area: in the Setlist app that's right under the
+        song tabs (Overview · Lyrics · Chords · Attachments). If the phone has scrolled the page up to make
+        room for the keyboard, it goes to the top of what's still visible instead. Alex's call (2.0.8.1);
+        it used to sit just above the keyboard. */
+    function scrollParent(el) {
+      for (var s = el.parentElement; s; s = s.parentElement) {
+        var oy = getComputedStyle(s).overflowY;
+        if (oy === 'auto' || oy === 'scroll') return s;
+      }
+      return null;
+    }
     function placeBar(bar) {
-      var vv = root.visualViewport;
-      var keyboard = vv && vv.height < root.innerHeight * 0.8;   // the visible area shrank: a keyboard is up
-      var bottom = vv ? Math.max(0, root.innerHeight - vv.height - vv.offsetTop) : 0;
-      bar.style.bottom = (bottom + (keyboard && IOS ? IOS_BAR_PX : 0)) + 'px';
+      var vv = root.visualViewport, area = scrollParent(ctx.el);
+      var y = area ? area.getBoundingClientRect().top : 0;
+      if (vv) y = Math.max(y, vv.offsetTop);
+      bar.style.top = '0px';
+      var base = bar.getBoundingClientRect().top;   // where "top: 0" is (an ancestor with a transform moves it)
+      bar.style.top = (y - base) + 'px';
+      // Keep the line being typed from hiding under the bar when the browser scrolls to the cursor.
+      if (area) area.style.scrollPaddingTop = bar.offsetHeight + 'px';
     }
     if (root.visualViewport) {
       var onVV = function () { var bar = ctx.el.querySelector('[data-wordbar]'); if (bar && !bar.hidden) placeBar(bar); };

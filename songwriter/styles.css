@@ -490,10 +490,10 @@
 .sw-legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0 90px; font-family: var(--sw-mono); font-size: 10px; color: var(--sw-dim); }
 .sw-legend b { color: var(--sw-gold); font-weight: 500; }
 
-/* Word bar: sits just above the phone's keyboard while typing */
+/* Word bar: while typing, pinned to the top of the lyrics area (under the song tabs); editor.js sets top */
 .sw-wordbar {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; display: flex; align-items: center; gap: 8px;
-  padding: 8px 12px; background: var(--sw-raised); border-top: 1px solid var(--sw-line);
+  position: fixed; left: 0; right: 0; top: 0; z-index: 30; display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; background: var(--sw-raised); border-bottom: 1px solid var(--sw-line);
 }
 .sw-wordbar[hidden] { display: none; }
 .sw-wordbar b { font-family: var(--sw-display); font-weight: 600; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
