@@ -9,7 +9,7 @@
  * Code_v*.gs — bump all of them together on every ship.
  */
 
-var SW_VERSION = "2.0.8-beta2";
+var SW_VERSION = "2.0.8-beta3";
 var CACHE = "setlist-shell-" + SW_VERSION;
 
 /* The app shell: the page itself plus the two CDN scripts it pulls today.
@@ -23,23 +23,23 @@ var SHELL = [
   "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"
 ];
 
-/* The Songwriter (Lyrics tab + Write tab) is a separate app on the same site,
- * loaded from /Songwriter/. Its files go in their own cache, kept across
- * Setlist versions, so the ~2.6 MB word lists (words.js, thesaurus.js,
- * definitions.js) aren't downloaded again on every Setlist update. Those
- * three are cached the first time the Songwriter fetches them; the code
- * files below are precached on install. */
-var SONGWRITER_PATH = "/Songwriter/";
-var SONGWRITER_CACHE = "setlist-songwriter";
-var SONGWRITER_SHELL = [
-  "/Songwriter/styles.css",
-  "/Songwriter/theory.js",
-  "/Songwriter/rhymes.js",
-  "/Songwriter/songs.js",
-  "/Songwriter/editor.js",
-  "/Songwriter/instruments.js",
-  "/Songwriter/app.js"
-];
+/* The Songwriter (Lyrics tab + Write tab) lives in songwriter/ next to the
+ * page. Its code ships with each Setlist version, so it's precached in the
+ * versioned shell cache below. Its big word lists (words.js, thesaurus.js,
+ * definitions.js, ~6 MB) are cached the first time they're used, in their
+ * own cache kept across Setlist versions, so an update doesn't download them
+ * again (they still refresh in the background like any other file). */
+var WORDLIST_CACHE = "setlist-wordlists";
+var WORDLISTS = /\/songwriter\/(words|thesaurus|definitions)\.js$/;
+SHELL = SHELL.concat([
+  "./songwriter/styles.css",
+  "./songwriter/theory.js",
+  "./songwriter/rhymes.js",
+  "./songwriter/songs.js",
+  "./songwriter/editor.js",
+  "./songwriter/instruments.js",
+  "./songwriter/app.js"
+]);
 
 function precache(cacheName, urls) {
   return caches.open(cacheName).then(function (cache) {
@@ -56,7 +56,7 @@ self.addEventListener("install", function (event) {
   // all-or-nothing) so one flaky CDN response can't block install. The
   // navigate handler below still guarantees the page opens offline.
   event.waitUntil(
-    Promise.all([precache(CACHE, SHELL), precache(SONGWRITER_CACHE, SONGWRITER_SHELL)])
+    precache(CACHE, SHELL)
       .then(function () { return self.skipWaiting(); })
   );
 });
@@ -64,11 +64,11 @@ self.addEventListener("install", function (event) {
 self.addEventListener("activate", function (event) {
   event.waitUntil(
     caches.keys().then(function (keys) {
-      // Only Setlist's own old shell caches. Other apps on this site (the
-      // Songwriter's "songwriter-…" caches) and the shared Songwriter-files
-      // cache above are left alone.
+      // Only Setlist's own caches: old shell versions, and the cache 2.0.8-beta1/2
+      // kept the old /Songwriter/ site's files in. Other apps on this site (the
+      // test Songwriter's "songwriter-…" caches) and the word lists are left alone.
       return Promise.all(keys.map(function (k) {
-        if (k.indexOf("setlist-shell-") === 0 && k !== CACHE) return caches.delete(k);
+        if ((k.indexOf("setlist-shell-") === 0 && k !== CACHE) || k === "setlist-songwriter") return caches.delete(k);
       }));
     }).then(function () { return self.clients.claim(); })
   );
@@ -130,7 +130,7 @@ self.addEventListener("fetch", function (event) {
   // revalidating in the background so an update lands on the next load.
   if (!sameOrigin && SHELL.indexOf(req.url) === -1) return;
 
-  var target = sameOrigin && new URL(req.url).pathname.indexOf(SONGWRITER_PATH) === 0 ? SONGWRITER_CACHE : CACHE;
+  var target = sameOrigin && WORDLISTS.test(new URL(req.url).pathname) ? WORDLIST_CACHE : CACHE;
   event.respondWith(
     caches.match(req, { ignoreVary: true }).then(function (hit) {
       var net = fetch(req).then(function (res) {

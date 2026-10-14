@@ -47,16 +47,17 @@
        If this fails to load (offline, CDN down) the app falls back to polling. -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"
           onerror=""></script>
-  <!-- Songwriter (lyrics editor + Write tab): a separate plain-JS app on the
-       same site, under window.SW with sw- classes. Order matters. Its word
-       lists (words.js etc.) load themselves from /Songwriter/ when needed. -->
-  <link rel="stylesheet" href="/Songwriter/styles.css">
-  <script src="/Songwriter/theory.js"></script>
-  <script src="/Songwriter/rhymes.js"></script>
-  <script src="/Songwriter/songs.js"></script>
-  <script src="/Songwriter/editor.js"></script>
-  <script src="/Songwriter/instruments.js"></script>
-  <script src="/Songwriter/app.js"></script>
+  <!-- Songwriter (lyrics editor + Write tab): plain-JS code in this repo's
+       songwriter/ folder, served next to this page. Everything is under
+       window.SW with sw- classes. Order matters. Its word lists (words.js
+       etc.) load themselves from songwriter/ when first needed. -->
+  <link rel="stylesheet" href="songwriter/styles.css">
+  <script src="songwriter/theory.js"></script>
+  <script src="songwriter/rhymes.js"></script>
+  <script src="songwriter/songs.js"></script>
+  <script src="songwriter/editor.js"></script>
+  <script src="songwriter/instruments.js"></script>
+  <script src="songwriter/app.js"></script>
 </head>
 <body>
   <div id="root"></div>
@@ -552,7 +553,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.8-beta2";
+const APP_VERSION = "2.0.8-beta3";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -5764,7 +5765,7 @@ function SongwriterPane({ songId, area, viewName }) {
         area: area || void 0,
         client: getSupabaseClient(),
         who: () => nameRef.current,
-        assetBase: "/Songwriter/"
+        assetBase: "songwriter/"
       });
     } catch (e) {
       console.warn("Songwriter failed to start", e);
