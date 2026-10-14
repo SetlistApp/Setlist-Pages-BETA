@@ -143,7 +143,7 @@ function scaleStylesheet(sheet) {
   }
   return scaled;
 }
-const TABS = ["Setlist", "Not In Show", "Originals", "All Songs", "Write"];
+const TABS = ["Setlist", "Not In Show", "Originals", "All Songs"];
 const SONG_HOME_SECTIONS = ["Set 1", "Set 2", "Not In Show"];
 const VIEW_IDS = ["view1", "view2", "view3", "view4", "view5"];
 const DEFAULT_VIEW_NAMES = ["Alex", "Nick", "Caleb", "Dan", "All"];
@@ -553,7 +553,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.8-beta3";
+const APP_VERSION = "2.0.8-beta4";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -2353,7 +2353,7 @@ function App() {
               setSaveState("idle");
               setSyncStatus("syncing");
               if (snapshot) {
-                if (snapshot.activeTab) setActiveTab(snapshot.activeTab);
+                if (snapshot.activeTab && TABS.includes(snapshot.activeTab)) setActiveTab(snapshot.activeTab);
                 const songStillExists = snapshot.openId && cd.songs.some((s) => s.id === snapshot.openId);
                 if (songStillExists) {
                   setOpenId(snapshot.openId);
@@ -2427,7 +2427,7 @@ function App() {
         setSyncStatus(data.offline ? "error" : "synced");
         if (!usedCache) {
           if (snapshot) {
-            if (snapshot.activeTab) setActiveTab(snapshot.activeTab);
+            if (snapshot.activeTab && TABS.includes(snapshot.activeTab)) setActiveTab(snapshot.activeTab);
             const songStillExists = snapshot.openId && data.songs.some((s) => s.id === snapshot.openId);
             if (songStillExists) {
               setOpenId(snapshot.openId);
@@ -3231,8 +3231,8 @@ function App() {
     }
   ), /* @__PURE__ */ React.createElement("div", { style: styles.tabRow }, TABS.map((t) => {
     const active = t === activeTab;
-    return /* @__PURE__ */ React.createElement("button", { key: t, onClick: () => setActiveTab(t), style: { ...styles.tab, ...active ? styles.tabActive : {} } }, t, t === "Write" ? /* @__PURE__ */ React.createElement(Icon, { name: "pencil", size: 13, color: active ? "var(--bg)" : "var(--dim)" }) : /* @__PURE__ */ React.createElement("span", { style: { ...styles.tabCount, ...active ? { color: "var(--bg)" } : {} } }, tabCounts[t]));
-  })), activeTab === "Write" ? /* @__PURE__ */ React.createElement("div", { style: styles.writeScroll }, /* @__PURE__ */ React.createElement(SongwriterPane, { area: "chords", viewName: currentViewName })) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: styles.searchRow }, /* @__PURE__ */ React.createElement(Icon, { name: "search", size: 17, color: "var(--dim)", style: { flexShrink: 0 } }), /* @__PURE__ */ React.createElement("input", { ref: searchInputRef, value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search", style: styles.searchInput }), query && /* @__PURE__ */ React.createElement("button", { onClick: () => setQuery(""), style: styles.clearBtn, "aria-label": "Clear search" }, /* @__PURE__ */ React.createElement(Icon, { name: "x", size: 15, color: "var(--dim)" }))), query.trim() ? /* @__PURE__ */ React.createElement(SearchResultsList, { songs: searchResults, onOpen: setOpenId }) : activeTab === "Setlist" ? /* @__PURE__ */ React.createElement("div", { style: styles.list }, /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("button", { key: t, onClick: () => setActiveTab(t), style: { ...styles.tab, ...active ? styles.tabActive : {} } }, t, /* @__PURE__ */ React.createElement("span", { style: { ...styles.tabCount, ...active ? { color: "var(--bg)" } : {} } }, tabCounts[t]));
+  })), /* @__PURE__ */ React.createElement("div", { style: styles.searchRow }, /* @__PURE__ */ React.createElement(Icon, { name: "search", size: 17, color: "var(--dim)", style: { flexShrink: 0 } }), /* @__PURE__ */ React.createElement("input", { ref: searchInputRef, value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search", style: styles.searchInput }), query && /* @__PURE__ */ React.createElement("button", { onClick: () => setQuery(""), style: styles.clearBtn, "aria-label": "Clear search" }, /* @__PURE__ */ React.createElement(Icon, { name: "x", size: 15, color: "var(--dim)" }))), query.trim() ? /* @__PURE__ */ React.createElement(SearchResultsList, { songs: searchResults, onOpen: setOpenId }) : activeTab === "Setlist" ? /* @__PURE__ */ React.createElement("div", { style: styles.list }, /* @__PURE__ */ React.createElement(
     SetlistBar,
     {
       setlist: activeSetlist,
@@ -3261,7 +3261,7 @@ function App() {
   )) : activeTab === "Not In Show" ? /* @__PURE__ */ React.createElement(NotInShowView, { songs, order: notInShowIds, onOpen: setOpenId, onAdd: addSongToActiveSetlist }) : activeTab === "Originals" ? /* @__PURE__ */ React.createElement(OriginalsView, { songs, onOpen: setOpenId, order: originalsOrder, onReorderCommit: (newOrder) => {
     setOriginalsOrder(newOrder);
     supabaseCall("saveOriginalsOrder", () => saveOriginalsOrderToSupabase(newOrder));
-  } }) : /* @__PURE__ */ React.createElement(AllSongsView, { songs, onOpen: setOpenId }), /* @__PURE__ */ React.createElement("button", { onClick: addSong, style: styles.fab, "aria-label": "Add song" }, /* @__PURE__ */ React.createElement(Icon, { name: "plus", size: 24, color: "var(--bg)" }))), openSong && /* @__PURE__ */ React.createElement(
+  } }) : /* @__PURE__ */ React.createElement(AllSongsView, { songs, onOpen: setOpenId }), /* @__PURE__ */ React.createElement("button", { onClick: addSong, style: styles.fab, "aria-label": "Add song" }, /* @__PURE__ */ React.createElement(Icon, { name: "plus", size: 24, color: "var(--bg)" })), openSong && /* @__PURE__ */ React.createElement(
     SongDetail,
     {
       song: openSong,
@@ -6534,7 +6534,6 @@ const rawStyles = {
   metaIconBtn: { background: "var(--surface-raised)", border: "1px solid var(--line)", borderRadius: 8, width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 },
   detailScroll: { flex: 1, overflowY: "auto", padding: "4px 16px 24px", touchAction: "pan-y" },
   detailScrollFlush: { padding: 0 },
-  writeScroll: { flex: 1, overflowY: "auto", minHeight: 0 },
   songwriterPane: { minHeight: "100%" },
   songwriterMissing: { padding: "24px 16px", color: "var(--dim)", fontSize: 14, textAlign: "center" },
   atomicList: { display: "flex", flexDirection: "column" },
