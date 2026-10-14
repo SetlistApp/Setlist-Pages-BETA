@@ -243,7 +243,8 @@
       if (store && !song && state.lySong && loadingId !== state.lySong) openSong(state.lySong);
       if (!song) return `${storeProblem ? problemBox() : '<div class="sw-wempty">Opening…</div>'}`;
       var o = order(), lab = labels(o, secs);
-      return `<div class="sw-songbar">${ctx.singleSong ? '' : '<button class="sw-back" data-act="ed-back" aria-label="Back to songs">‹</button>'}
+      return `<div class="sw-wordslot"><div class="sw-wordbar" data-wordbar hidden></div></div>
+        <div class="sw-songbar">${ctx.singleSong ? '' : '<button class="sw-back" data-act="ed-back" aria-label="Back to songs">‹</button>'}
           ${ctx.singleSong ? '<span class="sw-grow"></span>'   /* inside a Setlist song page, which already shows the title */
             : store.canRename === false ? `<div class="sw-title sw-keepcase">${esc(song.title || 'Untitled')}</div>`
             : `<input class="sw-title sw-keepcase" data-title value="${esc(song.title || '')}" placeholder="Song title" autocomplete="off">`}
@@ -252,8 +253,7 @@
         <div class="sw-secs ${showCounts ? '' : 'sw-nocounts'}">${o.map(function (id) { return sectionCard(id, lab); }).join('')}</div>
         <button class="sw-addsec" data-act="ed-add">+ Add section</button>
         ${showCounts ? '<div class="sw-legend"><span>8 = syllables</span><span><b>A</b> = rhymes</span><span>dashed = near · dotted = vowel</span><span>tap a letter to change</span></div>' : '<div class="sw-legend"></div>'}
-        ${undoBar()}
-        <div class="sw-wordbar" data-wordbar hidden></div>`;
+        ${undoBar()}`;
     }
 
     function undoBar() {
@@ -451,10 +451,11 @@
         <span class="sw-wbtns">${[['rhymes', 'Rhymes'], ['syn', 'Syn'], ['ant', 'Ant'], ['def', 'Meaning']].map(function (t) {
           return `<button data-act="ed-word" data-arg="${t[0]}">${t[1]}</button>`; }).join('')}<button class="sw-wletter" data-act="ed-pickword" aria-label="Give this word a rhyme letter">A·B</button></span>`;
     }
-    /** Pin the word bar to the top of the lyrics' scrolling area: in the Setlist app that's right under the
-        song tabs (Overview · Lyrics · Chords · Attachments). If the phone has scrolled the page up to make
-        room for the keyboard, it goes to the top of what's still visible instead. Alex's call (2.0.8.1);
-        it used to sit just above the keyboard. */
+    /** The word bar is pinned to the top of the lyrics' scrolling area (in the Setlist app: right under the
+        song tabs) by CSS alone: .sw-wordslot is position: sticky, first thing on the page, zero height, so
+        the bar floats over the lyrics without pushing them down. Alex's call (2.0.8.1); it used to sit just
+        above the keyboard. Measuring the screen instead broke on iPhone: with the keyboard up, iOS reports
+        the visible area's position in a way that put the bar ~100px too low (2.0.8.1-beta1). */
     function scrollParent(el) {
       for (var s = el.parentElement; s; s = s.parentElement) {
         var oy = getComputedStyle(s).overflowY;
@@ -462,20 +463,10 @@
       }
       return null;
     }
+    /** Keep the line being typed from hiding under the bar when the browser scrolls to the cursor. */
     function placeBar(bar) {
-      var vv = root.visualViewport, area = scrollParent(ctx.el);
-      var y = area ? area.getBoundingClientRect().top : 0;
-      if (vv) y = Math.max(y, vv.offsetTop);
-      bar.style.top = '0px';
-      var base = bar.getBoundingClientRect().top;   // where "top: 0" is (an ancestor with a transform moves it)
-      bar.style.top = (y - base) + 'px';
-      // Keep the line being typed from hiding under the bar when the browser scrolls to the cursor.
+      var area = scrollParent(ctx.el);
       if (area) area.style.scrollPaddingTop = bar.offsetHeight + 'px';
-    }
-    if (root.visualViewport) {
-      var onVV = function () { var bar = ctx.el.querySelector('[data-wordbar]'); if (bar && !bar.hidden) placeBar(bar); };
-      ctx.on(root.visualViewport, 'resize', onVV);
-      ctx.on(root.visualViewport, 'scroll', onVV);
     }
 
     ctx.el.addEventListener('input', function (e) {
