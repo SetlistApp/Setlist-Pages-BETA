@@ -230,9 +230,8 @@
         <span class="sw-scheme" data-scheme="${id}">${esc(schemeOf(x))}</span></div>`;
       if (editing) {
         return `<div class="sw-sec sw-editing" data-sec="${id}">${head}
-          <div class="sw-tawrap"><textarea class="sw-ta" data-body="${id}" rows="4" placeholder="Write here…" autocapitalize="sentences" spellcheck="true">${esc(x.body)}</textarea>
-          <div class="sw-gutter" data-gutter="${id}"></div><div class="sw-mirror" aria-hidden="true"></div></div>
-          <button class="sw-done" data-act="ed-done">Done</button></div>`;
+          <div class="sw-tawrap"><textarea class="sw-ta" data-body="${id}" rows="1" placeholder="Tap to write…" autocapitalize="sentences" spellcheck="true">${esc(x.body)}</textarea>
+          <div class="sw-gutter" data-gutter="${id}"></div><div class="sw-mirror" aria-hidden="true"></div></div></div>`;
       }
       return `<div class="sw-sec" data-sec="${id}">${head}<div class="sw-lines" data-act="ed-edit" data-id="${id}">${linesHtml(x)}</div></div>`;
     }
@@ -413,8 +412,9 @@
       var dict = ctx.dict(), sch = dict ? R.rhymeScheme(dict, lines, secs[id] && secs[id].rhyme_letters) : null;
       mirror.innerHTML = lines.map(function (l, i) { return `<div>${underlined(l, sch && sch.lines[i]) || '&#8203;'}</div>`; }).join('');
       ta.style.height = 'auto';
-      ta.style.height = Math.max(ta.scrollHeight, mirror.offsetHeight + 4) + 'px';
-      var tops = [].map.call(mirror.children, function (d) { return d.offsetTop; });
+      ta.style.height = Math.max(ta.scrollHeight, mirror.offsetHeight) + 'px';   // same height as the reading lines
+      var wrapTop = wrap.getBoundingClientRect().top;   // exact (offsetTop rounds to whole pixels and drifts)
+      var tops = [].map.call(mirror.children, function (d) { return d.getBoundingClientRect().top - wrapTop; });
       gutter.innerHTML = lines.map(function (l, i) {
         if (!l.trim() || !sch) return '';
         var info = sch.lines[i];
@@ -511,12 +511,42 @@
       if (afterRender.focusNext) {
         afterRender.focusNext = false;
         ta.focus();
-        var end = ta.value.length;
-        ta.setSelectionRange(end, end);
+        // The cursor goes where you tapped (2.0.8.2); otherwise at the end.
+        var at = afterRender.caretAt != null ? Math.min(afterRender.caretAt, ta.value.length) : ta.value.length;
+        afterRender.caretAt = null;
+        ta.setSelectionRange(at, at);
       }
     }
 
     // ---------- Taps ----------
+    // Where the last tap was, so tapping a word puts the cursor on that word.
+    var lastTap = null;
+    ctx.el.addEventListener('pointerdown', function (e) { lastTap = { x: e.clientX, y: e.clientY }; }, true);
+    /** The character in section id's text under the last tap (null if it wasn't on a line). */
+    function tapOffset(id) {
+      var box = lastTap && ctx.el.querySelector('.sw-lines[data-id="' + id + '"]');
+      var x = box && secs[id];
+      if (!box || !x || !x.body.trim()) return null;
+      var rows = box.querySelectorAll('.sw-ln'), lines = x.body.split('\n');
+      if (rows.length !== lines.length) return null;
+      for (var i = 0; i < rows.length; i++) {
+        var r = rows[i].getBoundingClientRect();
+        if (lastTap.y < r.top || lastTap.y >= r.bottom) continue;
+        var before = 0;
+        for (var k = 0; k < i; k++) before += lines[k].length + 1;
+        var lt = rows[i].querySelector('.sw-lt'), col = lines[i].length;
+        var pos = document.caretPositionFromPoint ? document.caretPositionFromPoint(lastTap.x, lastTap.y)
+          : document.caretRangeFromPoint ? (function (rg) { return rg && { offsetNode: rg.startContainer, offset: rg.startOffset }; })(document.caretRangeFromPoint(lastTap.x, lastTap.y)) : null;
+        if (lt && pos && lt.contains(pos.offsetNode)) {
+          col = 0;
+          var walk = document.createTreeWalker(lt, NodeFilter.SHOW_TEXT), n;
+          while ((n = walk.nextNode())) { if (n === pos.offsetNode) { col += pos.offset; break; } col += n.textContent.length; }
+        }
+        return before + Math.min(col, lines[i].length);
+      }
+      return null;
+    }
+
     function act(name, d) {
       var x = state.lyMenu && secs[state.lyMenu];
       var o, i, lab;
@@ -535,6 +565,7 @@
         case 'ed-back': closeSong(); break;
         case 'ed-edit':
           flush();
+          afterRender.caretAt = tapOffset(d.id);   // read before the reading view is replaced
           state.lyEditing = d.id; afterRender.focusNext = true;
           break;
         case 'ed-done': flush(); state.lyEditing = null; break;

@@ -524,10 +524,11 @@
 .sw-toast button { color: var(--sw-gold); font-family: var(--sw-display); font-weight: 600; font-size: 14px; }
 
 /* ---------- Lyrics page, plain-text look: no boxes, sections flow like a document ---------- */
+/* No gap between sections (Alex, 2.0.8.2): the section name alone separates them. */
 .sw-sec, .sw-sec.sw-editing, .sw-sec.sw-rep {
-  background: transparent; border: 0; border-radius: 0; box-shadow: none; padding: 0; margin: 0 0 22px;
+  background: transparent; border: 0; border-radius: 0; box-shadow: none; padding: 0; margin: 0;
 }
-.sw-sec.sw-editing { border-left: 2px solid var(--sw-gold); padding-left: 10px; margin-left: -12px; }
+/* Typing looks exactly like reading (Alex, 2.0.8.2): no edge, no Done button, same height. */
 .sw-sec .sw-tag, .sw-sec.sw-rep .sw-tag { background: transparent; padding: 0; min-height: 28px; border-radius: 0; }
 .sw-sec.sw-rep .sw-tag { color: var(--sw-dim); }
 .sw-sechd { margin-bottom: 2px; }
@@ -540,8 +541,9 @@
 .sw-lt { padding: 0; }
 .sw-lg { width: 56px; height: 25.6px; padding: 0; justify-content: flex-end; position: relative; }
 .sw-lg::before { content: ""; position: absolute; inset: -4px -6px -4px -10px; }   /* bigger tap area, same layout */
-.sw-ta { min-height: 77px; }
-.sw-done { background: transparent; color: var(--sw-gold); padding: 0 2px; min-height: 30px; }
+.sw-ta, .sw-mirror { padding: 2px 0 0; }   /* like .sw-lines: 2px on top, nothing below */
+.sw-ta { min-height: 34px; }   /* same as .sw-lines min-height, so short and empty sections keep their height */
+.sw-gl { margin-top: -2px; }   /* lines the counts up with where they sit while reading */
 .sw-addsec { width: auto; min-height: 40px; border: 0; padding: 0; text-align: left; }
 .sw-countbar { display: flex; justify-content: flex-end; margin: -6px 0 6px; }
 .sw-countbar .sw-switch { font-size: 12px; color: var(--sw-dim); }
