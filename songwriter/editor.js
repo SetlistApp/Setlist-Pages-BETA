@@ -159,6 +159,7 @@
       } else if (ev.table === 'sections' && r && r.id) {
         if (r.id === state.lyEditing || pending[r.id]) return;   // ours wins while we're typing it
         if (r.deleted_at) delete secs[r.id]; else secs[r.id] = r;
+        delete typingHist[r.id];   // someone else changed it: our undo steps would undo their change
       }
       redrawQuietly();
     }
@@ -485,9 +486,52 @@
       if (area) area.style.scrollPaddingTop = bar.offsetHeight + 'px';
     }
 
+    // ---------- Typing undo (⌘Z / ⌘⇧Z while typing lyrics, 2.0.8.2) ----------
+    // Per section: a burst of typing (until a pause of TYPING_BURST_MS) is one step. Kept while the
+    // song is open, also when you move between sections.
+    var TYPING_BURST_MS = 1000;
+    var typingHist = {};   // section id → { undo: [state], redo: [state], cur: state, at: time of last typing }
+    var stateOf = function (ta) { return { value: ta.value, a: ta.selectionStart, b: ta.selectionEnd }; };
+    function histFor(ta) {
+      var id = ta.dataset.body;
+      if (!typingHist[id]) typingHist[id] = { undo: [], redo: [], cur: stateOf(ta), at: 0 };
+      return typingHist[id];
+    }
+    function noteTyping(ta) {
+      var h = histFor(ta), now = Date.now();
+      if (h.cur.value === ta.value) { h.cur = stateOf(ta); return; }
+      if (now - h.at >= TYPING_BURST_MS) { h.undo.push(h.cur); if (h.undo.length > 200) h.undo.shift(); }
+      h.redo = [];
+      h.cur = stateOf(ta); h.at = now;
+    }
+    function bodyChanged(ta) {
+      var id = ta.dataset.body;
+      if (secs[id]) secs[id].body = ta.value;
+      queue(id, { body: ta.value });
+      updateGutter(ta);
+      updateWordBar(ta);
+    }
+    function undoTyping(ta, redo) {
+      var h = histFor(ta), from = redo ? h.redo : h.undo, to = redo ? h.undo : h.redo;
+      if (!from.length) return;
+      to.push(stateOf(ta));
+      var s = from.pop();
+      ta.value = s.value; ta.setSelectionRange(s.a, s.b);
+      h.cur = s; h.at = 0;   // the next letter starts a new step
+      bodyChanged(ta);
+    }
+    ctx.el.addEventListener('keydown', function (e) {
+      var t = e.target;
+      if (!(t.matches && t.matches('[data-body]')) || !(e.metaKey || e.ctrlKey) || e.altKey || (e.key || '').toLowerCase() !== 'z') return;
+      e.preventDefault(); e.stopPropagation();   // not the browser's undo, not the Setlist app's
+      undoTyping(t, e.shiftKey);
+    });
+    ctx.el.addEventListener('focusin', function (e) { if (e.target.matches && e.target.matches('[data-body]')) histFor(e.target); });
+
     ctx.el.addEventListener('input', function (e) {
       var t = e.target;
       if (t.matches && t.matches('[data-body]')) {
+        noteTyping(t);
         var id = t.dataset.body;
         if (secs[id]) secs[id].body = t.value;
         queue(id, { body: t.value });

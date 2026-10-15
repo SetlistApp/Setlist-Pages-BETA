@@ -553,7 +553,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.8.2-beta2";
+const APP_VERSION = "2.0.8.2-beta3";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -1290,6 +1290,14 @@ function mergeSetlistSets(base, mine, theirs) {
     });
     return Object.assign({}, s, { songIds: ids });
   });
+}
+const UNDO_BURST_MS = 1e3;
+function pushUndoEntry(stack, entry, now) {
+  const last = stack.length ? stack[stack.length - 1] : null;
+  if (last && last.songId === entry.songId && last.field === entry.field && typeof entry.newValue === "string" && typeof last.newValue === "string" && last.at != null && now - last.at < UNDO_BURST_MS) {
+    return stack.slice(0, -1).concat({ ...last, newValue: entry.newValue, at: now });
+  }
+  return stack.concat({ ...entry, at: now });
 }
 let _reloadHolds = 0;
 let _pendingReload = null;
@@ -2829,7 +2837,7 @@ function App() {
         for (var k in patch) {
           if (k === "id") continue;
           if (JSON.stringify(currentSong[k]) !== JSON.stringify(patch[k])) {
-            undoStackRef.current = undoStackRef.current.concat({ songId: id, field: k, oldValue: currentSong[k], newValue: patch[k] });
+            undoStackRef.current = pushUndoEntry(undoStackRef.current, { songId: id, field: k, oldValue: currentSong[k], newValue: patch[k] }, Date.now());
           }
         }
         redoStackRef.current = [];
@@ -2840,6 +2848,20 @@ function App() {
     setSongs((prev) => prev.map((s) => s.id === id ? { ...s, ...patch } : s));
     scheduleSongSave(id, patch);
   }
+  const undoKeysRef = useRef(null);
+  undoKeysRef.current = { undo: performUndo, redo: performRedo };
+  useEffect(() => {
+    function onKey(e) {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || (e.key || "").toLowerCase() !== "z") return;
+      const t = e.target;
+      if (t && t.closest && (t.closest(".sw-app") || t.closest("[data-native-undo]"))) return;
+      e.preventDefault();
+      if (e.shiftKey) undoKeysRef.current.redo();
+      else undoKeysRef.current.undo();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   function performUndo() {
     if (undoStackRef.current.length === 0) return;
     var entry = undoStackRef.current[undoStackRef.current.length - 1];
@@ -3232,7 +3254,7 @@ function App() {
   ), /* @__PURE__ */ React.createElement("div", { style: styles.tabRow }, TABS.map((t) => {
     const active = t === activeTab;
     return /* @__PURE__ */ React.createElement("button", { key: t, onClick: () => setActiveTab(t), style: { ...styles.tab, ...active ? styles.tabActive : {} } }, t, /* @__PURE__ */ React.createElement("span", { style: { ...styles.tabCount, ...active ? { color: "var(--bg)" } : {} } }, tabCounts[t]));
-  })), /* @__PURE__ */ React.createElement("div", { style: styles.searchRow }, /* @__PURE__ */ React.createElement(Icon, { name: "search", size: 17, color: "var(--dim)", style: { flexShrink: 0 } }), /* @__PURE__ */ React.createElement("input", { ref: searchInputRef, value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search", style: styles.searchInput }), query && /* @__PURE__ */ React.createElement("button", { onClick: () => setQuery(""), style: styles.clearBtn, "aria-label": "Clear search" }, /* @__PURE__ */ React.createElement(Icon, { name: "x", size: 15, color: "var(--dim)" }))), query.trim() ? /* @__PURE__ */ React.createElement(SearchResultsList, { songs: searchResults, onOpen: setOpenId }) : activeTab === "Setlist" ? /* @__PURE__ */ React.createElement("div", { style: styles.list }, /* @__PURE__ */ React.createElement(
+  })), /* @__PURE__ */ React.createElement("div", { style: styles.searchRow }, /* @__PURE__ */ React.createElement(Icon, { name: "search", size: 17, color: "var(--dim)", style: { flexShrink: 0 } }), /* @__PURE__ */ React.createElement("input", { ref: searchInputRef, "data-native-undo": "", value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search", style: styles.searchInput }), query && /* @__PURE__ */ React.createElement("button", { onClick: () => setQuery(""), style: styles.clearBtn, "aria-label": "Clear search" }, /* @__PURE__ */ React.createElement(Icon, { name: "x", size: 15, color: "var(--dim)" }))), query.trim() ? /* @__PURE__ */ React.createElement(SearchResultsList, { songs: searchResults, onOpen: setOpenId }) : activeTab === "Setlist" ? /* @__PURE__ */ React.createElement("div", { style: styles.list }, /* @__PURE__ */ React.createElement(
     SetlistBar,
     {
       setlist: activeSetlist,
