@@ -23,6 +23,7 @@
   const SNAPSHOT_KEY = 'songwriter_reloadSnapshot';   // keeps your work through an automatic update
   const DRAG_START_PX = 6;   // a finger has to move this far before a tap becomes a drag
   const WORDS_URL = 'words.js';   // the rhyme word list (~0.5 MB), loaded the first time Lyrics opens
+  const LYRICWORDS_URL = 'lyricwords.js';   // how often each of those words is sung (35 KB): the lyric bump
   const DEFINITIONS_URL = 'definitions.js';   // meanings with examples (~2.7 MB), loaded the first time Meaning opens
   const THESAURUS_URL = 'thesaurus.js';   // synonyms & antonyms by meaning (~1.8 MB), loaded the first time they're asked for
   const DATAMUSE = 'https://api.datamuse.com/words';   // extra related words (needs internet)
@@ -33,7 +34,7 @@
   ];
   // First batch shown in each word-sheet tab; the rest is one tap away ("Show N more").
   // Rhymes count per kind (perfect, family, vowel), so lots of perfect rhymes can't hide the family ones.
-  const FIRST = { rhymes: 30, phrases: 12, syn: 40, ant: 40, def: 4, rel: 24 };   // rel: per Related group
+  const FIRST = { rhymes: 30, phrases: 12, syn: 40, ant: 40, def: 4, rel: 24, 'rel-phrases': 12 };   // rel: per Related group
   const ONLINE_TABS = ['syn', 'ant', 'rel'];   // tabs that also ask Datamuse when they open
 
   function mount(el, options) {
@@ -398,9 +399,14 @@
     }
     function needWords() {
       if (dictState !== 'idle') return;
-      if (SW.WORDS) { dict = R.load(SW.WORDS); dictState = 'ready'; return; }
+      const ready = () => { dict = R.addLyrics(R.load(SW.WORDS), SW.LYRICWORDS); dictState = 'ready'; };
+      if (SW.WORDS && SW.LYRICWORDS) { ready(); return; }
       dictState = 'loading';
-      loadScript(BASE + WORDS_URL, () => { dict = R.load(SW.WORDS); dictState = 'ready'; renderUnlessTyping(); }, () => { dictState = 'idle'; renderUnlessTyping(); });
+      // The sung-word counts come second and are optional: without them the lists just skip the lyric bump.
+      const lyrics = () => SW.LYRICWORDS ? (ready(), renderUnlessTyping())
+        : loadScript(BASE + LYRICWORDS_URL, () => { ready(); renderUnlessTyping(); }, () => { ready(); renderUnlessTyping(); });
+      if (SW.WORDS) { lyrics(); return; }
+      loadScript(BASE + WORDS_URL, lyrics, () => { dictState = 'idle'; renderUnlessTyping(); });
     }
     function needThesaurus() {
       if (thState !== 'idle') return;
@@ -446,6 +452,9 @@
       if (ONLINE_TABS.includes(state.wordTab)) fetchWords(state.wordTab, w);
     }
 
+    /** How often a word is sung, 0 … 1, for the lyric bump (null until the word list is in). */
+    const sung = (w) => (dictState === 'ready' ? R.lyricOf(dict, w) : null);
+
     /** Extra related words or opposites from Datamuse, sorted best first (SW.rhymes ranks them).
         Shown under the offline thesaurus groups. Redraws when the answer arrives. */
     function fetchWords(kind, word) {
@@ -464,7 +473,7 @@
       }
       // Related: Datamuse's raw answers are kept; they're sorted when shown (that needs the word list).
       if (kind === 'rel') {
-        const qs = { me: `sp=${w}&md=pf&max=1`, jjb: `rel_jjb=${w}&md=pf&max=100`, jja: `rel_jja=${w}&md=pf&max=100`,
+        const qs = { me: `sp=${w}&md=pf&max=1`, pre: `sp=*%20${w}&md=f&max=100`, post: `sp=${w}%20*&md=f&max=100`, mid: `sp=*%20${w}%20*&md=f&max=100`, jjb: `rel_jjb=${w}&md=pf&max=100`, jja: `rel_jja=${w}&md=pf&max=100`,
           after: `lc=${w}&sp=*&md=pf&max=100`, before: `rc=${w}&sp=*&md=pf&max=100`, trg: `rel_trg=${w}&md=pf&max=100`, ml: `ml=${w}&md=pf&max=100` };
         const keys = Object.keys(qs);
         Promise.all(keys.map((k) => ask(qs[k])))
@@ -475,8 +484,8 @@
       }
       const done = kind === 'syn'
         ? Promise.all([ask(`sp=${w}&md=p&max=1`), ask(`rel_syn=${w}&md=fp&max=100`), ask(`ml=${w}&md=fp&max=150`)])
-          .then(([me, syns, related]) => R.rankSynonyms(word, me[0], syns, related))
-        : ask(`rel_ant=${w}&md=f&max=50`).then((ants) => R.rankAntonyms(word, ants));
+          .then(([me, syns, related]) => R.rankSynonyms(word, me[0], syns, related, 0, sung))
+        : ask(`rel_ant=${w}&md=f&max=50`).then((ants) => R.rankAntonyms(word, ants, sung));
       done.then((words) => { dmCache[key] = { status: 'ok', words }; })
         .catch(() => { dmCache[key] = { status: 'error', words: [] }; })
         .then(() => { if (state.sheet === 'word' && state.word === word && state.wordTab === kind) render(); });
@@ -606,7 +615,7 @@
       const raw = got.words, typed = R.clean(state.word);
       const keepVulgar = R.isVulgar(th, typed);
       const groups = R.rankRelated(dict, state.word, raw.me && raw.me[0], raw)
-        .map((g) => ({ id: g.id, label: g.label, words: keepVulgar ? g.words : g.words.filter((x) => !R.isVulgar(th, x)) }))
+        .map((g) => ({ id: g.id, label: g.label, words: keepVulgar ? g.words : g.words.filter((x) => !x.split(/[ -]/).some((p) => R.isVulgar(th, p))) }))
         .filter((g) => g.words.length);
       if (!groups.length) return `<div class="sw-wempty">No related words found for “${esc(state.word)}”.</div>`;
       return `<div class="sw-wlist">${groups.map((g) => {

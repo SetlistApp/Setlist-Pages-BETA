@@ -9,7 +9,7 @@
  * Code_v*.gs — bump all of them together on every ship.
  */
 
-var SW_VERSION = "2.0.8.2-beta7";
+var SW_VERSION = "2.0.8.2-beta8";
 var CACHE = "setlist-shell-" + SW_VERSION;
 
 /* The app shell: the page itself plus the two CDN scripts it pulls today.
@@ -25,12 +25,12 @@ var SHELL = [
 
 /* The Songwriter (Lyrics tab + Write tab) lives in songwriter/ next to the
  * page. Its code ships with each Setlist version, so it's precached in the
- * versioned shell cache below. Its big word lists (words.js, thesaurus.js,
- * definitions.js, ~6 MB) are cached the first time they're used, in their
+ * versioned shell cache below. Its big word lists (words.js, lyricwords.js,
+ * thesaurus.js, definitions.js, ~6 MB) are cached the first time they're used, in their
  * own cache kept across Setlist versions, so an update doesn't download them
  * again (they still refresh in the background like any other file). */
 var WORDLIST_CACHE = "setlist-wordlists";
-var WORDLISTS = /\/songwriter\/(words|thesaurus|definitions)\.js$/;
+var WORDLISTS = /\/songwriter\/(words|lyricwords|thesaurus|definitions)\.js$/;
 SHELL = SHELL.concat([
   "./songwriter/styles.css",
   "./songwriter/theory.js",
