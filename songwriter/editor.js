@@ -320,6 +320,8 @@
         .then(function () { saving = false; showStatus(); if (!saveError && Object.keys(pending).length) flush(); });
     }
     ctx.on(root, 'online', function () { if (saveError) flush(); });
+    ctx.on(root, 'resize', function () { refitBar(); });   // turned sideways: the word bar may fit on one row now
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { refitBar(); });   // measured before the font arrived
 
     /** Adding and removing sections: one at a time, in order, then everyone's positions are saved. */
     function structural(run) {
@@ -550,13 +552,39 @@
       var w = cl >= 0 && !onTitle ? wordAtCursor(ta) : '';
       if (!w) { bar.hidden = true; barWord = ''; var a = scrollParent(ctx.el); if (a) a.style.scrollPaddingTop = ''; return; }
       bar.hidden = false;
+      if (w !== barWord) {
+        barWord = w;
+        var dict = ctx.dict(), syl = dict ? R.syllables(dict, w) : 0;
+        bar.innerHTML = `<span class="sw-wword"><b class="sw-keepcase">${esc(w)}</b>${syl ? `<small>${syl} syl</small>` : ''}</span>
+          <span class="sw-wbtns">${[['rhymes', 'Rhymes'], ['syn', 'Syn'], ['ant', 'Ant'], ['def', 'Meaning'], ['rel', 'Related']].map(function (t) {
+            return `<button data-act="ed-word" data-arg="${t[0]}">${t[1]}</button>`; }).join('')}<button class="sw-wletter" data-act="ed-pickword" aria-label="Give this word a rhyme letter">A·B</button></span>`;
+        fitBar(bar);
+      }
       placeBar(bar);
-      if (w === barWord) return;
-      barWord = w;
-      var dict = ctx.dict(), syl = dict ? R.syllables(dict, w) : 0;
-      bar.innerHTML = `<b class="sw-keepcase">${esc(w)}</b>${syl ? `<small>${syl} syl</small>` : ''}
-        <span class="sw-wbtns">${[['rhymes', 'Rhymes'], ['syn', 'Syn'], ['ant', 'Ant'], ['def', 'Meaning']].map(function (t) {
-          return `<button data-act="ed-word" data-arg="${t[0]}">${t[1]}</button>`; }).join('')}<button class="sw-wletter" data-act="ed-pickword" aria-label="Give this word a rhyme letter">A·B</button></span>`;
+    }
+    /** The whole word always shows (Alex, 2.0.8.2-beta7): a long word gets smaller text, down to 14px;
+        if it still doesn't fit beside the buttons, the buttons move to a second row under it.
+        The room is measured as the bar's width minus the buttons, not from the word's own box. */
+    var WORD_PX = 17, WORD_MIN_PX = 14;
+    function fitBar(bar) {
+      var b = bar.querySelector('.sw-wword b'), btns = bar.querySelector('.sw-wbtns');
+      if (!b || !btns) return;
+      bar.classList.remove('sw-wrap');
+      var cs = getComputedStyle(bar);
+      var room = bar.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - btns.offsetWidth - (parseFloat(cs.columnGap) || 0);
+      var range = document.createRange();
+      range.selectNodeContents(b);
+      var fits = function () { return range.getBoundingClientRect().width <= room; };
+      for (var px = WORD_PX; px >= WORD_MIN_PX; px -= 0.5) {
+        b.style.fontSize = px + 'px';
+        if (fits()) return;
+      }
+      b.style.fontSize = '';
+      bar.classList.add('sw-wrap');
+    }
+    function refitBar() {
+      var bar = ctx.el.querySelector('[data-wordbar]');
+      if (bar && !bar.hidden) { fitBar(bar); placeBar(bar); }
     }
     /** The word bar is pinned to the top of the lyrics' scrolling area (in the Setlist app: right under the
         song tabs) by CSS alone: .sw-wordslot is position: sticky, first thing on the page, zero height, so

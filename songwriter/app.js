@@ -33,7 +33,8 @@
   ];
   // First batch shown in each word-sheet tab; the rest is one tap away ("Show N more").
   // Rhymes count per kind (perfect, family, vowel), so lots of perfect rhymes can't hide the family ones.
-  const FIRST = { rhymes: 30, phrases: 12, syn: 40, ant: 40, def: 4 };
+  const FIRST = { rhymes: 30, phrases: 12, syn: 40, ant: 40, def: 4, rel: 24 };   // rel: per Related group
+  const ONLINE_TABS = ['syn', 'ant', 'rel'];   // tabs that also ask Datamuse when they open
 
   function mount(el, options) {
     const opts = options || {};
@@ -61,7 +62,7 @@
       lyRecent: [],          // words looked up this visit, newest first
       word: null,            // word shown in the word sheet
       wordTrail: [],         // words looked up before it from inside the sheet (for ‹ Back)
-      wordTab: 'rhymes',     // 'rhymes' | 'syn' | 'ant' | 'def'
+      wordTab: 'rhymes',     // 'rhymes' | 'syn' | 'ant' | 'def' | 'rel'
       strict: 1,             // rhyme strictness: 0 Perfect, 1 Family, 2 Vowel
       showHidden: false,     // Synonyms/Antonyms: vulgar words shown at the bottom
       showAll: {},           // word-sheet tabs showing everything, not just the first batch: { rhymes: true }
@@ -442,7 +443,7 @@
       state.wordPron = -1;
       state.lyRecent = [w].concat(state.lyRecent.filter((x) => x !== w)).slice(0, 10);
       needWords();
-      if (state.wordTab === 'syn' || state.wordTab === 'ant') fetchWords(state.wordTab, w);
+      if (ONLINE_TABS.includes(state.wordTab)) fetchWords(state.wordTab, w);
     }
 
     /** Extra related words or opposites from Datamuse, sorted best first (SW.rhymes ranks them).
@@ -461,6 +462,17 @@
           .then(() => { if (state.sheet === 'word' && state.word === word && state.wordTab === kind) render(); });
         return;
       }
+      // Related: Datamuse's raw answers are kept; they're sorted when shown (that needs the word list).
+      if (kind === 'rel') {
+        const qs = { me: `sp=${w}&md=pf&max=1`, jjb: `rel_jjb=${w}&md=pf&max=100`, jja: `rel_jja=${w}&md=pf&max=100`,
+          after: `lc=${w}&sp=*&md=pf&max=100`, before: `rc=${w}&sp=*&md=pf&max=100`, trg: `rel_trg=${w}&md=pf&max=100`, ml: `ml=${w}&md=pf&max=100` };
+        const keys = Object.keys(qs);
+        Promise.all(keys.map((k) => ask(qs[k])))
+          .then((lists) => { const raw = {}; keys.forEach((k, i) => { raw[k] = lists[i]; }); dmCache[key] = { status: 'ok', words: raw }; })
+          .catch(() => { dmCache[key] = { status: 'error', words: [] }; })
+          .then(() => { if (state.sheet === 'word' && state.word === word && state.wordTab === kind) render(); });
+        return;
+      }
       const done = kind === 'syn'
         ? Promise.all([ask(`sp=${w}&md=p&max=1`), ask(`rel_syn=${w}&md=fp&max=100`), ask(`ml=${w}&md=fp&max=150`)])
           .then(([me, syns, related]) => R.rankSynonyms(word, me[0], syns, related))
@@ -473,7 +485,7 @@
     /** The first batch of a list for a tab, plus "Show N more" (or "Show fewer" once it's open).
         kindOf (optional) splits the batch by kind: the first N of each kind are shown. */
     function firstBatch(tab, list, kindOf) {
-      const n = FIRST[tab], seen = {};
+      const n = FIRST[tab] || FIRST[tab.split('-')[0]], seen = {};
       const first = kindOf ? list.filter((x) => { const k = kindOf(x); seen[k] = (seen[k] || 0) + 1; return seen[k] <= n; }) : list.slice(0, n);
       const extra = list.length - first.length;
       if (!extra) return { list, more: '' };
@@ -580,18 +592,41 @@
         </div>`).join('')}</div>${batch.more}${from}`;
     }
 
+    /** Related: words that go with this one, in groups (SW.rhymes.rankRelated). Online only (Datamuse).
+        Vulgar words are left out unless the word itself is one. */
+    function relatedTab() {
+      needThesaurus();
+      if (dictState !== 'ready' || thState !== 'ready') return '<div class="sw-wempty">Loading the word list…</div>';
+      const got = dmCache[`rel:${state.word}`];
+      if (!got) { fetchWords('rel', state.word); return '<div class="sw-wempty">Looking it up online…</div>'; }
+      if (got.status === 'loading') return '<div class="sw-wempty">Looking it up online…</div>';
+      if (got.status === 'error') {
+        return `<div class="sw-wempty">Related words need the internet${navigator.onLine === false ? ', and you’re offline.' : '. <button class="sw-link" data-act="word-retry">Try again</button>'}</div>`;
+      }
+      const raw = got.words, typed = R.clean(state.word);
+      const keepVulgar = R.isVulgar(th, typed);
+      const groups = R.rankRelated(dict, state.word, raw.me && raw.me[0], raw)
+        .map((g) => ({ id: g.id, label: g.label, words: keepVulgar ? g.words : g.words.filter((x) => !R.isVulgar(th, x)) }))
+        .filter((g) => g.words.length);
+      if (!groups.length) return `<div class="sw-wempty">No related words found for “${esc(state.word)}”.</div>`;
+      return `<div class="sw-wlist">${groups.map((g) => {
+        const batch = firstBatch(`rel-${g.id}`, g.words);
+        return `<div class="sw-sub">${g.label}</div>${wordButtons(batch.list)}${batch.more}`;
+      }).join('')}</div><div class="sw-wnote">Best first. Tap a word to look it up. Needs internet.</div>`;
+    }
+
     function wordSheet() {
       const syl = dictState === 'ready' ? R.syllables(dict, state.word) : 0;
       const back = state.wordTrail.length
         ? `<button class="sw-wback" data-act="word-back">‹ ${esc(state.wordTrail[state.wordTrail.length - 1])}</button>` : '';
-      const body = state.wordTab === 'rhymes' ? rhymesTab() : state.wordTab === 'def' ? meaningTab() : wordsTab(state.wordTab);
+      const body = state.wordTab === 'rhymes' ? rhymesTab() : state.wordTab === 'def' ? meaningTab() : state.wordTab === 'rel' ? relatedTab() : wordsTab(state.wordTab);
       return `<div class="sw-dimmer" data-act="close-sheet"></div>
         <div class="sw-sheet sw-wsheet">
           <div class="sw-sheet-head" data-sheet-grab><div class="sw-grab"></div>
             ${back}
             <div class="sw-whead"><b class="sw-keepcase">${esc(state.word)}</b>${syl ? `<span>${syl} syllable${syl > 1 ? 's' : ''}</span>` : ''}<button class="sw-x" data-act="close-sheet" aria-label="Close">✕</button></div>
           </div>
-          ${seg('word-tab', [['rhymes', 'Rhymes'], ['syn', 'Synonyms'], ['ant', 'Antonyms'], ['def', 'Meaning']], state.wordTab, 'sw-wide sw-4tabs')}
+          ${seg('word-tab', [['rhymes', 'Rhymes'], ['syn', 'Synonyms'], ['ant', 'Antonyms'], ['def', 'Meaning'], ['rel', 'Related']], state.wordTab, 'sw-wide sw-5tabs')}
           ${body}
         </div>`;
     }
@@ -747,10 +782,10 @@
         case 'show-hidden': state.showHidden = true; break;
         case 'show-all': state.showAll[arg] = true; break;
         case 'show-less': state.showAll[arg] = false; break;
-        case 'word-back': state.word = state.wordTrail.pop(); state.showHidden = false; state.showAll = {}; state.wordPron = -1; if (state.wordTab === 'syn' || state.wordTab === 'ant') fetchWords(state.wordTab, state.word); break;
+        case 'word-back': state.word = state.wordTrail.pop(); state.showHidden = false; state.showAll = {}; state.wordPron = -1; if (ONLINE_TABS.includes(state.wordTab)) fetchWords(state.wordTab, state.word); break;
         case 'word-tab':
           state.wordTab = arg;
-          if (arg === 'syn' || arg === 'ant') fetchWords(arg, state.word);
+          if (ONLINE_TABS.includes(arg)) fetchWords(arg, state.word);
           break;
         case 'word-retry': fetchWords(state.wordTab, state.word); break;
         case 'strict': state.strict = +arg; break;
@@ -1023,7 +1058,7 @@
       openWord: (word, tab) => {
         lookup(word, false);
         state.wordTab = tab;
-        if (tab === 'syn' || tab === 'ant') fetchWords(tab, state.word);
+        if (ONLINE_TABS.includes(tab)) fetchWords(tab, state.word);
       }
     });
 

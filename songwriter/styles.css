@@ -305,7 +305,7 @@
   color: var(--sw-text); font: 600 16px var(--sw-body);   /* 16px, or iPhones zoom in when you tap it */
   -webkit-appearance: none; appearance: none;
 }
-.sw-seg.sw-4tabs button { padding: 7px 2px; font-size: 12.5px; }
+.sw-seg.sw-5tabs button { padding: 7px 1px; font-size: 12px; }
 /* Meaning tab */
 .sw-defs { margin-top: 6px; }
 .sw-def { padding: 12px 0; border-bottom: 1px solid var(--sw-line); }
@@ -498,12 +498,17 @@
   padding: 8px 12px; background: var(--sw-raised); border-bottom: 1px solid var(--sw-line);
 }
 .sw-wordbar[hidden] { display: none; }
+.sw-wword { display: flex; flex-direction: column; min-width: 0; line-height: 1.1; }   /* the word, its syllables under it */
 .sw-wordbar b { font-family: var(--sw-display); font-weight: 600; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .sw-wordbar small { font-family: var(--sw-mono); font-size: 10px; color: var(--sw-dim); white-space: nowrap; }
-.sw-wbtns { margin-left: auto; display: flex; gap: 5px; flex-shrink: 0; }
+.sw-wbtns { margin-left: auto; display: flex; gap: 4px; flex-shrink: 0; }
+/* A word too long for one row (editor.js fitBar): the whole word on top, the buttons spread out below. */
+.sw-wordbar.sw-wrap { flex-wrap: wrap; row-gap: 6px; }
+.sw-wordbar.sw-wrap .sw-wword { flex-direction: row; align-items: baseline; gap: 8px; }
+.sw-wordbar.sw-wrap .sw-wbtns { width: 100%; margin-left: 0; justify-content: space-between; }
 .sw-wbtns .sw-wletter { color: var(--sw-gold); }
 .sw-wbtns button {
-  min-height: 34px; padding: 0 9px; border-radius: 8px; border: 1px solid var(--sw-line); background: var(--sw-surface);
+  min-height: 34px; padding: 0 7px; border-radius: 8px; border: 1px solid var(--sw-line); background: var(--sw-surface);
   font-family: var(--sw-display); font-weight: 600; font-size: 12.5px;
 }
 

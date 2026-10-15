@@ -564,6 +564,81 @@
       .map(function (o) { return o.x.word; });
   }
 
+  // ---------- Related words (Datamuse, the word sheet's Related tab) ----------
+  var RELATED_GROUPS = [
+    { id: 'describing', label: 'Describing words' },     // rel_jjb: adjectives used with a noun (ocean → deep, vast)
+    { id: 'describes', label: 'Things it describes' },   // rel_jja: nouns an adjective is used with (broken → heart, glass)
+    { id: 'next', label: 'Often next to' },              // lc / rc: words seen right after or before it (midnight → hour)
+    { id: 'world', label: 'Same world' }                 // rel_trg: words that turn up with it (rain → thunder, mud)
+  ];
+  // Left out of Related on top of the grammar words: small words that go with anything (no, some,
+  // between, very, began…) and plain sizes and amounts (little, much, last). They crowd out the
+  // words a lyric can use.
+  var RELATED_SKIP = {};
+  ('no not nor any some all each every both either neither one two three four five ten first second ' +
+    'last next other another same such own only even ever never always often again still already ' +
+    'now then here there where when why how very too quite rather almost nearly just also yet else ' +
+    'more most less least much many few several enough little lot lots whole various certain ' +
+    'about above across after against along among around before behind below beneath beside between ' +
+    'beyond during except inside like near off out outside over past since through throughout till ' +
+    'toward towards under until up down within without away back once ' +
+    'get gets got getting take takes took taking make makes made making came come comes coming go goes ' +
+    'went going gone began begin having felt feel feels let put set say tell told seem seems ' +
+    'new latter former recent previous major minor general common national public certain particular ' +
+    'great good bad big small large high low long short real right left full non anti post pre ' +
+    'thing things way ways part kind sort type time times day year years man men people').split(' ')
+    .forEach(function (x) { RELATED_SKIP[x] = true; });
+  /** The Related tab's groups for a word, best first in each, each word in only one group.
+      me = Datamuse's own entry for the word (part of speech, its first tag = its main use);
+      a = { jjb, jja, after, before, trg, ml }, each a Datamuse answer list (asked with md=pf).
+      Datamuse's order counts most (it puts the telling words first: spark → electric, divine);
+      how common a word is counts a little. Grammar words, small everyday words, names, odd
+      spellings and other forms of the word itself are left out; rare words come last.
+      Returns [{ id, label, words }] for the groups that have any words. */
+  function rankRelated(dict, word, me, a) {
+    var w = clean(word), tags = me && clean(me.word) === w ? me.tags || [] : [];
+    var main = tags.filter(function (t) { return /^(n|v|adj|adv)$/.test(t); })[0] || null;
+    var forms = {};
+    [w, w + 's', w + 'es', w + 'ed', w + 'd', w + 'ing', w.replace(/e$/, '') + 'ing', w + 'ly', w + 'ness',
+      w.replace(/s$/, ''), w.replace(/es$/, ''), w.replace(/ey$/, 'y'), w.replace(/y$/, 'ey')]
+      .forEach(function (f) { forms[f] = true; });
+    var inMl = {};
+    (a.ml || []).forEach(function (x) { inMl[x.word] = true; });
+    var shown = {};
+    var known = function (v) { return v.split(' ').every(function (p) { return find(dict, p) >= 0; }); };
+    function ok(x) {
+      var v = x.word;
+      if (forms[v] || GRAMMAR_WORDS[v] || RELATED_SKIP[v] || !/^[a-z][a-z' -]*$/.test(v)) return false;
+      var i = find(dict, v);
+      return !(i >= 0 && !dict.real[i]);   // names, foreign words, abbreviations
+    }
+    function rank(list, boost) {
+      list = (list || []).filter(ok);
+      var picked = list.map(function (x, i) {
+        var score = 0.75 * (1 - i / list.length) + 0.25 * popularity(freqOf(x)) + (boost && boost[x.word] ? 0.3 : 0)
+          - rarePenalty(x) - (known(x.word) ? 0 : 10);
+        return { word: x.word, score: score };
+      }).sort(function (p, q) { return q.score - p.score; });
+      var out = [];
+      picked.forEach(function (p) {
+        var v = p.word;
+        if (shown[v] || shown[v.replace(/s$/, '')] || shown[v.replace(/es$/, '')]) return;   // plugs after plug
+        shown[v] = true;
+        out.push(v);
+      });
+      return out;
+    }
+    var words = {
+      describing: !main || main === 'n' ? rank(a.jjb) : [],   // broken → "heart, sword" (as a noun) is no help
+      describes: main === 'adj' ? rank(a.jja) : []   // road → "side, building" (road as a describing word) is no help
+    };
+    var near = (a.after || []).concat(a.before || []).filter(function (x) { return (x.tags || []).indexOf('adv') < 0 || (x.tags || []).indexOf('n') >= 0; });
+    words.next = rank(near.sort(function (p, q) { return (q.score || 0) - (p.score || 0); }));
+    words.world = rank(a.trg, inMl);
+    return RELATED_GROUPS.map(function (g) { return { id: g.id, label: g.label, words: words[g.id] }; })
+      .filter(function (g) { return g.words.length; });
+  }
+
   // ---------- Offline thesaurus (thesaurus.js) ----------
   /** Turns SW.THESAURUS into something fast to look up. Meanings are unpacked when first asked for. */
   function loadThesaurus(th) {
@@ -730,7 +805,7 @@
     encode: encode, decode: decode, tail: tail, compareTails: compareTails, tailScore: tailScore,
     load: load, clean: clean, find: find, syllables: syllables, rhymeType: rhymeType, rhymes: rhymes,
     respell: respell, pronunciations: pronunciations, tailsOf: tailsOf,
-    rankSynonyms: rankSynonyms, rankAntonyms: rankAntonyms,
+    rankSynonyms: rankSynonyms, rankAntonyms: rankAntonyms, rankRelated: rankRelated, RELATED_GROUPS: RELATED_GROUPS,
     lineWords: lineWords, wordSpans: wordSpans, lineSyllables: lineSyllables, rhymeScheme: rhymeScheme, lineRhyme: lineRhyme,
     loadThesaurus: loadThesaurus, baseWord: baseWord, loadDefinitions: loadDefinitions, definitions: definitions, meanings: meanings, isVulgar: isVulgar, band: band
   };
