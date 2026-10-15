@@ -23,6 +23,7 @@
   const SNAPSHOT_KEY = 'songwriter_reloadSnapshot';   // keeps your work through an automatic update
   const DRAG_START_PX = 6;   // a finger has to move this far before a tap becomes a drag
   const WORDS_URL = 'words.js';   // the rhyme word list (~0.5 MB), loaded the first time Lyrics opens
+  const SAYINGS_URL = 'sayings.js';   // idioms, proverbs and similes from Wiktionary (~75 KB), loaded the first time Related opens
   const LYRICWORDS_URL = 'lyricwords.js';   // how often each of those words is sung (35 KB): the lyric bump
   const DEFINITIONS_URL = 'definitions.js';   // meanings with examples (~2.7 MB), loaded the first time Meaning opens
   const THESAURUS_URL = 'thesaurus.js';   // synonyms & antonyms by meaning (~1.8 MB), loaded the first time they're asked for
@@ -34,7 +35,7 @@
   ];
   // First batch shown in each word-sheet tab; the rest is one tap away ("Show N more").
   // Rhymes count per kind (perfect, family, vowel), so lots of perfect rhymes can't hide the family ones.
-  const FIRST = { rhymes: 30, phrases: 12, syn: 40, ant: 40, def: 4, rel: 24, 'rel-phrases': 12 };   // rel: per Related group
+  const FIRST = { rhymes: 30, phrases: 12, syn: 40, ant: 40, def: 4, rel: 24, 'rel-phrases': 12, 'rel-similes': 8 };   // rel: per Related group
   const ONLINE_TABS = ['syn', 'ant', 'rel'];   // tabs that also ask Datamuse when they open
 
   function mount(el, options) {
@@ -91,6 +92,8 @@
     let dictState = 'idle';   // 'idle' | 'loading' | 'ready'
     let th = null;            // the offline thesaurus, once thesaurus.js has loaded
     let thState = 'idle';
+    let say = null;           // sayings and similes, once sayings.js has loaded
+    let sayState = 'idle';
     let defs = null;          // definitions, once definitions.js has loaded
     let defState = 'idle';
     const dmCache = {};       // Datamuse answers: { 'syn:stop': { status, words } }
@@ -408,6 +411,13 @@
       if (SW.WORDS) { lyrics(); return; }
       loadScript(BASE + WORDS_URL, lyrics, () => { dictState = 'idle'; renderUnlessTyping(); });
     }
+    function needSayings() {
+      if (sayState !== 'idle') return;
+      if (SW.SAYINGS) { say = R.loadSayings(SW.SAYINGS); sayState = 'ready'; return; }
+      sayState = 'loading';
+      // Optional: if it can't load (offline the first time), Related just goes without sayings.
+      loadScript(BASE + SAYINGS_URL, () => { say = R.loadSayings(SW.SAYINGS); sayState = 'ready'; render(); }, () => { sayState = 'failed'; render(); });
+    }
     function needThesaurus() {
       if (thState !== 'idle') return;
       if (SW.THESAURUS) { th = R.loadThesaurus(SW.THESAURUS); thState = 'ready'; return; }
@@ -605,24 +615,30 @@
         Vulgar words are left out unless the word itself is one. */
     function relatedTab() {
       needThesaurus();
-      if (dictState !== 'ready' || thState !== 'ready') return '<div class="sw-wempty">Loading the word list…</div>';
+      needSayings();
+      if (dictState !== 'ready' || thState !== 'ready' || sayState === 'loading') return '<div class="sw-wempty">Loading the word list…</div>';
       const got = dmCache[`rel:${state.word}`];
-      if (!got) { fetchWords('rel', state.word); return '<div class="sw-wempty">Looking it up online…</div>'; }
-      if (got.status === 'loading') return '<div class="sw-wempty">Looking it up online…</div>';
-      if (got.status === 'error') {
-        return `<div class="sw-wempty">Related words need the internet${navigator.onLine === false ? ', and you’re offline.' : '. <button class="sw-link" data-act="word-retry">Try again</button>'}</div>`;
-      }
-      const raw = got.words, typed = R.clean(state.word);
-      const keepVulgar = R.isVulgar(th, typed);
-      const groups = R.rankRelated(dict, state.word, raw.me && raw.me[0], raw)
-        .map((g) => ({ id: g.id, label: g.label, words: keepVulgar ? g.words : g.words.filter((x) => !x.split(/[ -]/).some((p) => R.isVulgar(th, p))) }))
+      if (!got) fetchWords('rel', state.word);
+      // Similes and sayings are on the phone, so they show right away (and offline); Datamuse's groups join when they arrive.
+      const online = got && got.status === 'ok' ? got.words : {};
+      const typed = R.clean(state.word), keepVulgar = R.isVulgar(th, typed);
+      const groups = R.rankRelated(dict, state.word, online.me && online.me[0], online, say)
+        .map((g) => ({ id: g.id, label: g.label, words: keepVulgar ? g.words : g.words.filter((x) => !x.toLowerCase().split(/[^a-z]+/).some((p) => R.isVulgar(th, p))) }))
         .filter((g) => g.words.length);
-      if (!groups.length) return `<div class="sw-wempty">No related words found for “${esc(state.word)}”.</div>`;
+      const offline = navigator.onLine === false;
+      const status = !got || got.status === 'loading' ? 'Looking for more online…'
+        : got.status === 'error' ? (offline ? 'Connect to the internet for describing words and more.' : '<button class="sw-link" data-act="word-retry">Look online again</button>') : '';
+      const credit = groups.some((g) => g.id === 'similes' || g.id === 'phrases') ? ' Sayings and similes from Wiktionary (CC BY-SA).' : '';
+      if (!groups.length) {
+        return !got || got.status === 'loading' ? '<div class="sw-wempty">Looking it up online…</div>'
+          : `<div class="sw-wempty">No related words found for “${esc(state.word)}”. ${status}</div>`;
+      }
       return `<div class="sw-wlist">${groups.map((g) => {
         const batch = firstBatch(`rel-${g.id}`, g.words);
         return `<div class="sw-sub">${g.label}</div>${wordButtons(batch.list)}${batch.more}`;
-      }).join('')}</div><div class="sw-wnote">Best first. Tap a word to look it up. Needs internet.</div>`;
+      }).join('')}</div><div class="sw-wnote">Best first. Tap a word to look it up.${credit} ${status}</div>`;
     }
+
 
     function wordSheet() {
       const syl = dictState === 'ready' ? R.syllables(dict, state.word) : 0;

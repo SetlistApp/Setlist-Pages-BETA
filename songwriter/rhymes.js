@@ -216,8 +216,9 @@
       real word ("heart of gold" → gold). null when the counts aren't loaded. */
   function lyricOf(dict, word) {
     if (!dict || !dict.lyric) return null;
-    var parts = clean(word).split(/[ -]+/).filter(function (p) { return p && !GRAMMAR_WORDS[p]; });
-    if (!parts.length) parts = clean(word).split(/[ -]+/);
+    var all = clean(word).split(/[^a-z']+/).filter(Boolean);
+    var parts = all.filter(function (p) { return !GRAMMAR_WORDS[p]; });
+    if (!parts.length) parts = all;
     return Math.min.apply(null, parts.map(function (p) { var j = find(dict, p); return j >= 0 && dict.real[j] && p.indexOf("'") < 0 ? lyricAt(dict, j) : 0; }));
   }
   function usability(dict, j) {
@@ -597,11 +598,13 @@
 
   // ---------- Related words (Datamuse, the word sheet's Related tab) ----------
   var RELATED_GROUPS = [
-    { id: 'phrases', label: 'Phrases & sayings' },       // sp=* word / word * / * word *: heart → heart of gold, take heart
     { id: 'describing', label: 'Describing words' },     // rel_jjb: adjectives used with a noun (ocean → deep, vast)
     { id: 'describes', label: 'Things it describes' },   // rel_jja: nouns an adjective is used with (broken → heart, glass)
     { id: 'next', label: 'Often next to' },              // lc / rc: words seen right after or before it (midnight → hour)
-    { id: 'world', label: 'Same world' }                 // rel_trg: words that turn up with it (rain → thunder, mud)
+    { id: 'world', label: 'Same world' },                // rel_trg: words that turn up with it (rain → thunder, mud)
+    { id: 'similes', label: 'Similes' },                 // sayings.js (Wiktionary): cold → cold as ice
+    { id: 'phrases', label: 'Phrases & sayings' }        // sayings.js (Wiktionary) idioms and proverbs, then Datamuse's
+                                                         // phrases if those are few (spark → spark plug). Last: Alex
   ];
   // Left out of Related on top of the grammar words: small words that go with anything (no, some,
   // between, very, began…) and plain sizes and amounts (little, much, last). They crowd out the
@@ -650,15 +653,40 @@
     });
     return out;
   }
+  // ---------- Sayings and similes (sayings.js, from Wiktionary) ----------
+  /** Turns SW.SAYINGS into lists. */
+  function loadSayings(raw) {
+    return { sayings: raw && raw.sayings ? raw.sayings.split('|') : [], similes: raw && raw.similes ? raw.similes.split('|') : [] };
+  }
+  /** Idioms / proverbs and similes with the word (or its plural or -ed / -ing form) in them, best first:
+      ones whose words are often sung come first (heart of gold before heart balm), and 3–5 words before
+      two-word ones and long proverbs. Returns { sayings, similes }. */
+  function sayingsFor(dict, say, word) {
+    var w = clean(word), forms = {};
+    [w, w + 's', w + 'es', w + 'ed', w + 'd', w + 'ing', w.replace(/e$/, '') + 'ing', w.replace(/y$/, 'ies')]
+      .forEach(function (f) { forms[f] = true; });
+    function find_(list) {
+      return list.filter(function (p) {
+        return p.toLowerCase().split(/[^a-z']+/).some(function (x) { return forms[x]; });
+      }).map(function (p) {
+        var l = lyricOf(dict, p), n = p.split(' ').length;
+        var shape = n <= 2 ? 0.5 : n <= 5 ? 1 : n <= 7 ? 0.7 : 0.4;   // 3–5 words make the best hooks (heart of gold)
+        return { p: p, score: 0.6 * (l == null ? 0.5 : l) + 0.4 * shape };
+      }).sort(function (a, b) { return b.score - a.score; }).map(function (o) { return o.p; });
+    }
+    return { sayings: find_(say.sayings), similes: find_(say.similes) };
+  }
+
   /** The Related tab's groups for a word, best first in each, each word in only one group.
       me = Datamuse's own entry for the word (part of speech, its first tag = its main use);
       a = { jjb, jja, after, before, trg, ml, pre, post, mid }, each a Datamuse answer list (asked
-      with md=pf; pre / post / mid = phrases with the word last, first or inside).
+      with md=pf; pre / post / mid = phrases with the word last, first or inside; any can be missing,
+      e.g. offline). say (optional) = loadSayings(SW.SAYINGS) for similes and sayings.
       Datamuse's order counts most (it puts the telling words first: spark → electric, divine);
       how common a word is, and how often it's sung (the lyric bump), count a little. Grammar words, small everyday words, names, odd
       spellings and other forms of the word itself are left out; rare words come last.
       Returns [{ id, label, words }] for the groups that have any words. */
-  function rankRelated(dict, word, me, a) {
+  function rankRelated(dict, word, me, a, say) {
     var w = clean(word), tags = me && clean(me.word) === w ? me.tags || [] : [];
     var main = tags.filter(function (t) { return /^(n|v|adj|adv)$/.test(t); })[0] || null;
     var forms = {};
@@ -700,7 +728,14 @@
     var near = (a.after || []).concat(a.before || []).filter(function (x) { return (x.tags || []).indexOf('adv') < 0 || (x.tags || []).indexOf('n') >= 0; });
     words.next = rank(near.sort(function (p, q) { return (q.score || 0) - (p.score || 0); }));
     words.world = rank(a.trg, inMl);
-    words.phrases = relatedPhrases(dict, w, (a.pre || []).concat(a.post || [], a.mid || []));
+    // Sayings: Wiktionary's (offline) first; Datamuse's phrases only fill in when there are few.
+    var said = say ? sayingsFor(dict, say, w) : { sayings: [], similes: [] };
+    words.similes = said.similes;
+    var have = {};
+    said.sayings.forEach(function (p) { have[p.toLowerCase()] = true; });
+    var extra = said.sayings.length >= 8 ? [] : relatedPhrases(dict, w, (a.pre || []).concat(a.post || [], a.mid || []))
+      .filter(function (p) { return !have[p]; });
+    words.phrases = said.sayings.concat(extra);
     return RELATED_GROUPS.map(function (g) { return { id: g.id, label: g.label, words: words[g.id] }; })
       .filter(function (g) { return g.words.length; });
   }
@@ -871,7 +906,7 @@
     encode: encode, decode: decode, tail: tail, compareTails: compareTails, tailScore: tailScore,
     load: load, clean: clean, find: find, syllables: syllables, rhymeType: rhymeType, rhymes: rhymes,
     respell: respell, pronunciations: pronunciations, tailsOf: tailsOf,
-    rankSynonyms: rankSynonyms, rankAntonyms: rankAntonyms, addLyrics: addLyrics, lyricOf: lyricOf, rankRelated: rankRelated, RELATED_GROUPS: RELATED_GROUPS,
+    rankSynonyms: rankSynonyms, rankAntonyms: rankAntonyms, addLyrics: addLyrics, lyricOf: lyricOf, rankRelated: rankRelated, RELATED_GROUPS: RELATED_GROUPS, loadSayings: loadSayings, sayingsFor: sayingsFor,
     lineWords: lineWords, wordSpans: wordSpans, lineSyllables: lineSyllables, rhymeScheme: rhymeScheme, lineRhyme: lineRhyme,
     loadThesaurus: loadThesaurus, baseWord: baseWord, loadDefinitions: loadDefinitions, definitions: definitions, meanings: meanings, isVulgar: isVulgar, band: band
   };
