@@ -283,5 +283,66 @@
     return out;
   }
 
-  SW.songs = { open: open, practiceStore: practiceStore, importLyrics: importLyrics, isChordLine: isChordLine };
+  // ---------- One text box for the whole song (2.0.8.2) ----------
+  // The editor shows a song as one text: a line starting with "#" is a section title ("# Chorus"), the
+  // lines under it are that section's words. Lines before the first title are a section with no name
+  // (tag ''). Each section is still saved as its own row.
+
+  var TITLE = /^#(.*)$/;
+
+  /** Sections ([{ tag, body }], top to bottom) → the text the box shows. */
+  function sheetText(sections) {
+    return sections.map(function (s, i) {
+      if (i === 0 && !s.tag) return s.body || '';   // words before the first title
+      return '# ' + (s.tag || '') + (s.body ? '\n' + s.body : '');
+    }).join('\n');
+  }
+
+  /** The text in the box → sections [{ tag, body }]. sheetText(parseSheet(t)) gives back t, apart
+      from the spacing after "#" ("#Chorus" → "# Chorus"). */
+  function parseSheet(text) {
+    if (!text) return [];
+    var out = [], cur = null;
+    text.split('\n').forEach(function (line) {
+      var m = TITLE.exec(line);
+      if (m) { cur = { tag: m[1].trim(), lines: [] }; out.push(cur); return; }
+      if (!cur) { cur = { tag: '', lines: [] }; out.push(cur); }
+      cur.lines.push(line);
+    });
+    return out.map(function (s) { return { tag: s.tag, body: s.lines.join('\n') }; });
+  }
+
+  /** Which saved section each section in the box is, so only what changed gets saved.
+      before = [{ key, tag, body }] (as last saved / shown), after = parseSheet(text).
+      Sections that are exactly the same are matched first (longest common run); the ones in between
+      are paired in order (an edit), and what's left over was added or removed.
+      Returns { keys: [key or null (new) for each section in after], removed: [{ key, into }] } where
+      into = the key of a neighbouring section it was merged into (so its picked rhyme letters can move
+      there), or null. */
+  function matchSections(before, after) {
+    var same = function (a, b) { return a.tag === b.tag && a.body === b.body; };
+    var n = before.length, m = after.length, L = [];
+    for (var i = 0; i <= n; i++) { L.push([]); for (var j = 0; j <= m; j++) L[i].push(0); }
+    for (i = n - 1; i >= 0; i--) for (j = m - 1; j >= 0; j--) L[i][j] = same(before[i], after[j]) ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+    var anchors = [];   // [i, j] pairs that are exactly the same
+    i = 0; j = 0;
+    while (i < n && j < m) {
+      if (same(before[i], after[j])) { anchors.push([i, j]); i++; j++; }
+      else if (L[i + 1][j] >= L[i][j + 1]) i++; else j++;
+    }
+    anchors.push([n, m]);
+    var keys = [], removed = [], pi = 0, pj = 0;
+    anchors.forEach(function (a) {
+      var gi = a[0] - pi, gj = a[1] - pj, k = Math.min(gi, gj), last = null;
+      for (var t = 0; t < k; t++) { keys[pj + t] = before[pi + t].key; last = before[pi + t].key; }
+      for (t = k; t < gj; t++) keys[pj + t] = null;
+      for (t = k; t < gi; t++) removed.push({ key: before[pi + t].key, into: last || (a[0] < n ? before[a[0]].key : null) || (pi > 0 ? before[pi - 1].key : null) });
+      if (a[0] < n) keys[a[1]] = before[a[0]].key;
+      pi = a[0] + 1; pj = a[1] + 1;
+    });
+    return { keys: keys, removed: removed };
+  }
+
+  SW.songs = { open: open, practiceStore: practiceStore, importLyrics: importLyrics, isChordLine: isChordLine,
+    sheetText: sheetText, parseSheet: parseSheet, matchSections: matchSections };
 })(typeof window !== 'undefined' ? window : globalThis);

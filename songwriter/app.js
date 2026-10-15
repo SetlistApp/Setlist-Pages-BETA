@@ -399,7 +399,7 @@
       if (dictState !== 'idle') return;
       if (SW.WORDS) { dict = R.load(SW.WORDS); dictState = 'ready'; return; }
       dictState = 'loading';
-      loadScript(BASE + WORDS_URL, () => { dict = R.load(SW.WORDS); dictState = 'ready'; render(); }, () => { dictState = 'idle'; render(); });
+      loadScript(BASE + WORDS_URL, () => { dict = R.load(SW.WORDS); dictState = 'ready'; renderUnlessTyping(); }, () => { dictState = 'idle'; renderUnlessTyping(); });
     }
     function needThesaurus() {
       if (thState !== 'idle') return;
@@ -1011,6 +1011,10 @@
     on(document, 'pointerup', endSheetDrag);
     on(document, 'pointercancel', endSheetDrag);
 
+    /** A full redraw replaces the lyrics box, which closes the phone's keyboard. While someone is typing
+        lyrics, the editor refreshes what it shows in place instead (2.0.8.2: the lyrics are always a box). */
+    function renderUnlessTyping() { if (state.area === 'lyrics' && editor.typing()) editor.refresh(); else render(); }
+
     // ---------- Lyrics: songs list and editor (editor.js) ----------
     const editor = SW.editor.create({
       el, state, render, esc, findBox, on,
@@ -1025,7 +1029,7 @@
 
     // ---------- Start ----------
     let resizeTimer;
-    on(root, 'resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 120); });
+    on(root, 'resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(renderUnlessTyping, 120); });
     on(landMq, 'change', render);
     on(deskMq, 'change', render);
     render();

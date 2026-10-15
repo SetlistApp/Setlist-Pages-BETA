@@ -3,21 +3,29 @@
 
    app.js creates it with SW.editor.create(ctx) and calls:
      page()        the Lyrics page (songs list or one song)
-     sheet()       its pop-ups (section menu, add section, song menu), when state.sheet starts with "ed-"
+     sheet()       its pop-ups (rhyme letter picker, song menu), when state.sheet starts with "ed-"
      act(name, d)  taps on data-act="ed-…" buttons; returns true if handled
      isBusy()      true while typing or saving (the page shouldn't refresh itself then)
+     typing()      true while the lyrics box has the keyboard (app.js then calls refresh(), not a redraw)
+     refresh()     update the counts, rhyme letters and word bar in place
    ctx = { el, state, render, esc, dict() (word list or null), findBox() (Find rhymes HTML), openWord(word, tab) }
 
-   While a section is being typed in, the page is never redrawn (that would close the keyboard):
-   the line counts, rhyme letters and word bar are updated in place instead. */
+   A song is one text box (2.0.8.2, Alex): a line starting with "#" is a section title ("# Chorus") and
+   the lines under it are that section's words. Each section is still saved as its own row
+   (song_lyric_sections), so two people editing different sections never clash: every change in the box
+   is matched back to the sections (SW.songs.matchSections) and only what changed is saved.
+
+   The box's own letters are invisible. A copy of the text laid out exactly the same way (the mirror)
+   sits behind it and draws them: titles in gold (their "#" hidden unless the cursor is on that line),
+   lyrics with their rhyme underlines. That's why it never changes look when you tap in to type.
+   While you type, the page is never redrawn (that would close the keyboard). */
 (function (root) {
   var SW = root.SW = root.SW || {};
   var R = SW.rhymes;
 
-  var TAGS = ['Verse', 'Pre-chorus', 'Chorus', 'Bridge', 'Intro', 'Outro'];
   var SAVE_AFTER_MS = 800;      // save a section this long after you stop typing
   var RETRY_MS = 5000;          // try a failed save again after this long
-  var UNDO_MS = 10000;          // how long "Undo" stays after deleting
+  var UNDO_MS = 10000;          // how long "Undo" stays after deleting a song
   // Lyrics save to the Setlist app's songs (song_lyric_sections), only inside the Setlist app (it
   // passes its database client). Anywhere else (the test site) songs are practice ones kept in the
   // browser tab and never sent anywhere. #practice forces that inside Setlist too, for testing.
@@ -26,8 +34,13 @@
     var state = ctx.state, esc = ctx.esc;
     var store = null, storeProblem = null;      // problem: 'offline' | 'not-configured' | 'not-set-up' | 'error'
     var list = null, listLoading = false;       // songs list
-    var song = null, secs = {}, stopLive = null; // the open song, its sections by id, live-updates switch
+    var song = null, secs = {}, stopLive = null; // the open song, its saved sections by id, live-updates switch
+    // The sections as shown in the box, top to bottom: { key, id (null until saved), tag, body,
+    // rhyme_letters, editedAt }. key stays the same while a new section is being saved.
+    var rows = [];
     var pending = {}, saveTimer = null, saving = false, saveError = false, titleTimer = null;
+    var structChain = Promise.resolve(), structBusy = 0, newKey = 0;   // adding/removing sections, one at a time
+    var needsReload = false;                    // someone else added/removed a section while we were typing
     var undo = null;                            // { text, run, timer }
     var loadingId = null;                       // song being fetched (so it's only asked for once)
     var notFound = false;                       // single-song mode (inside Setlist): that song isn't there
@@ -126,8 +139,8 @@
 
     // ---------- Opening a song ----------
     function openSong(id) {
-      state.lyView = 'song'; state.lySong = id; state.lyEditing = null;
-      song = null; secs = {};
+      state.lyView = 'song'; state.lySong = id;
+      song = null; secs = {}; rows = []; typingHist = null;
       if (stopLive) { stopLive(); stopLive = null; }
       if (!store) return;
       loadingId = id;
@@ -135,33 +148,29 @@
         if (!r.song || r.song.deleted_at) { if (ctx.singleSong) notFound = true; else state.lyView = 'list'; return; }
         song = r.song; secs = {};
         r.sections.forEach(function (x) { secs[x.id] = x; });
+        rowsFromSaved();
         stopLive = store.subscribe(id, onLive);
       }).catch(function (e) { storeProblem = problemOf(e); if (!ctx.singleSong) state.lyView = 'list'; })
         .then(function () { loadingId = null; ctx.render(); });
     }
 
+    /** Reload the song's sections (after someone else added or removed one while we were typing). */
+    function reloadSong() {
+      if (!song || !store) return;
+      needsReload = false;
+      store.load(song.id).then(function (r) {
+        if (!r.song || typing() || structBusy || Object.keys(pending).length) { needsReload = true; return; }
+        secs = {}; r.sections.forEach(function (x) { secs[x.id] = x; });
+        rowsFromSaved();
+        ctx.render();
+      }).catch(function () { needsReload = true; });
+    }
+
     function closeSong() {
       flush();
       if (stopLive) { stopLive(); stopLive = null; }
-      state.lyView = 'list'; state.lyEditing = null; song = null; secs = {};
+      state.lyView = 'list'; song = null; secs = {}; rows = [];
       list = null;   // reload so the list shows the changes
-    }
-
-    /** Someone else saved: update that part (never the section being typed in). */
-    function onLive(ev) {
-      if (!song) return;
-      var r = ev.row;
-      if (ev.table === 'songs' && r && r.id === song.id) {
-        var titleBox = ctx.el.querySelector('[data-title]');
-        var typingTitle = titleBox && document.activeElement === titleBox;
-        song = Object.assign({}, song, r, typingTitle ? { title: song.title } : {});
-        if (r.deleted_at) { closeSong(); ctx.render(); return; }
-      } else if (ev.table === 'sections' && r && r.id) {
-        if (r.id === state.lyEditing || pending[r.id]) return;   // ours wins while we're typing it
-        if (r.deleted_at) delete secs[r.id]; else secs[r.id] = r;
-        delete typingHist[r.id];   // someone else changed it: our undo steps would undo their change
-      }
-      redrawQuietly();
     }
 
     // ---------- Song page ----------
@@ -170,31 +179,38 @@
       if (store && store.positional) return Object.keys(secs).sort(function (a, b) { return (secs[a].position || 0) - (secs[b].position || 0); });
       return (song.section_order || []).filter(function (id) { return secs[id]; });
     }
-    /** Use a new top-to-bottom order (keeps positions in step for Setlist songs). */
-    function applyOrder(o) {
-      song.section_order = o;
-      o.forEach(function (id, i) { if (secs[id]) secs[id].position = i; });
+
+    /** rows ← the saved sections. Old-style sections are tidied on the way (and saved like any edit):
+        a repeat ("↻ Chorus", gone since 2.0.8.2) becomes a written-out copy; a plain "Verse" gets the
+        number it was shown with ("Verse 2"), since the title is now just what's typed. */
+    function rowsFromSaved() {
+      var o = order(), lab = labels(o, secs);
+      o.forEach(function (id) {
+        var x = secs[id];
+        if (!x.repeat_of) return;
+        var from = secs[x.repeat_of];
+        while (from && from.repeat_of) from = secs[from.repeat_of];
+        var patch = { repeat_of: null, tag: from ? lab[from.id] || from.tag : x.tag, body: from ? from.body || '' : x.body || '' };
+        if (from && from.rhyme_letters && Object.keys(from.rhyme_letters).length) patch.rhyme_letters = from.rhyme_letters;
+        Object.assign(x, patch);
+        queue(id, patch);
+      });
+      o.forEach(function (id) {
+        var x = secs[id];
+        if (x.tag === 'Verse' && lab[id] && lab[id] !== x.tag) { x.tag = lab[id]; queue(id, { tag: x.tag }); }
+      });
+      rows = o.map(function (id) {
+        var x = secs[id];
+        return { key: id, id: id, tag: x.tag == null ? '' : x.tag, body: x.body || '', rhyme_letters: x.rhyme_letters || {}, editedAt: 0 };
+      });
     }
 
     function status() {
       if (saveError) return '<span class="sw-saved sw-bad">Not saved · retrying</span>';
-      if (saving || Object.keys(pending).length) return '<span class="sw-saved sw-dimtext">Saving…</span>';
+      if (saving || structBusy || Object.keys(pending).length) return '<span class="sw-saved sw-dimtext">Saving…</span>';
       return '<span class="sw-saved">✓ Saved</span>';
     }
 
-    function linesHtml(x) {
-      var lines = (x.body || '').split('\n');
-      if (!x.body.trim()) return '<div class="sw-ph">Tap to write…</div>';
-      var dict = ctx.dict();
-      var sch = dict ? R.rhymeScheme(dict, lines, x.rhyme_letters) : null;
-      return lines.map(function (line, i) {
-        if (!line.trim()) return '<div class="sw-ln sw-blank"></div>';
-        var info = sch ? sch.lines[i] : { letter: '', syllables: '' };
-        var text = underlined(line, info);
-        // The counts and letter are a button: tap to pick this line's rhyme letter.
-        return `<div class="sw-ln"><span class="sw-lt">${text}</span><button class="sw-lg" data-act="ed-link" data-id="${x.id}" data-line="${i}" aria-label="Choose the rhyme letter for this line"><span class="sw-ls">${info.syllables}</span>${letterChip(info)}</button></div>`;
-      }).join('');
-    }
     /** A line as HTML with its rhyme underlines: the rhyming ending (one or more words) and any
         word you gave a letter yourself. */
     function underlined(line, info) {
@@ -209,48 +225,10 @@
 
     /** Color by letter; outline by how closely it rhymes: solid (perfect, or a letter you picked), dashed (family), dotted (vowel). */
     function kindClass(info) {
-      return `sw-c${info.letter.charCodeAt(0) % 4}${info.kind === 'family' ? ' sw-near' : info.kind === 'vowel' ? ' sw-vowel' : ''}`;   // perfect & picked: solid
+      return `sw-k${(info.letter.charCodeAt(0) - 65) % 6}${info.kind === 'family' ? ' sw-near' : info.kind === 'vowel' ? ' sw-vowel' : ''}`;   // perfect & picked: solid
     }
     function letterChip(info) {
       return info.letter ? `<span class="sw-lr ${kindClass(info)}">${info.letter}</span>` : '<span class="sw-lr sw-none"></span>';
-    }
-
-    function schemeOf(x) {
-      var dict = ctx.dict();
-      return dict && x.body.trim() ? R.rhymeScheme(dict, x.body.split('\n'), x.rhyme_letters).scheme : '';
-    }
-
-    function sectionCard(id, lab) {
-      var x = secs[id];
-      if (x.repeat_of) {
-        var target = secs[x.repeat_of];
-        return `<div class="sw-sec sw-rep" data-sec="${id}"><button class="sw-tag sw-keepcase" data-act="ed-menu" data-id="${id}">↻ ${esc(target ? lab[x.repeat_of] || target.tag : 'Repeat')} <span>▾</span></button></div>`;
-      }
-      var editing = state.lyEditing === id;
-      var head = `<div class="sw-sechd"><button class="sw-tag sw-keepcase" data-act="ed-menu" data-id="${id}">${esc(lab[id])} <span>▾</span></button>
-        <span class="sw-scheme" data-scheme="${id}">${esc(schemeOf(x))}</span></div>`;
-      if (editing) {
-        return `<div class="sw-sec sw-editing" data-sec="${id}">${head}
-          <div class="sw-tawrap"><textarea class="sw-ta" data-body="${id}" rows="1" placeholder="Tap to write…" autocapitalize="sentences" spellcheck="true">${esc(x.body)}</textarea>
-          <div class="sw-gutter" data-gutter="${id}"></div><div class="sw-mirror" aria-hidden="true"></div></div></div>`;
-      }
-      return `<div class="sw-sec" data-sec="${id}">${head}<div class="sw-lines" data-act="ed-edit" data-id="${id}">${linesHtml(x)}</div></div>`;
-    }
-
-    /** No more repeats ("↻ Chorus") since 2.0.8.2 (Alex): a repeat becomes a normal section with the
-        words written out, edited on its own. Old ones (or ones an older app version just made) are
-        turned into copies the moment the song is on screen, and saved like any other edit. */
-    function writeOutRepeats() {
-      Object.keys(secs).forEach(function (id) {
-        var x = secs[id];
-        if (!x.repeat_of) return;
-        var from = secs[x.repeat_of];
-        while (from && from.repeat_of) from = secs[from.repeat_of];   // a repeat of a repeat
-        var patch = { repeat_of: null, tag: from ? from.tag : x.tag, body: from ? from.body || '' : x.body || '' };
-        if (from && from.rhyme_letters && Object.keys(from.rhyme_letters).length) patch.rhyme_letters = from.rhyme_letters;
-        Object.assign(x, patch);
-        queue(id, patch);
-      });
     }
 
     function songPage() {
@@ -258,8 +236,6 @@
       if (notFound) return '<div class="sw-wempty">Couldn’t find this song’s lyrics.</div>';
       if (store && !song && state.lySong && loadingId !== state.lySong) openSong(state.lySong);
       if (!song) return `${storeProblem ? problemBox() : '<div class="sw-wempty">Opening…</div>'}`;
-      writeOutRepeats();
-      var o = order(), lab = labels(o, secs);
       return `<div class="sw-wordslot"><div class="sw-wordbar" data-wordbar hidden></div></div>
         <div class="sw-songbar">${ctx.singleSong ? '' : '<button class="sw-back" data-act="ed-back" aria-label="Back to songs">‹</button>'}
           ${ctx.singleSong ? '<span class="sw-grow"></span>'   /* inside a Setlist song page, which already shows the title */
@@ -267,9 +243,10 @@
             : `<input class="sw-title sw-keepcase" data-title value="${esc(song.title || '')}" placeholder="Song title" autocomplete="off">`}
           ${status()}<button class="sw-dots" data-act="ed-songmenu" aria-label="Song menu">⋯</button></div>
         <div class="sw-countbar"><button class="sw-switch ${showCounts ? 'sw-on' : ''}" data-act="ed-counts"><span></span>Syllables &amp; rhymes</button></div>
-        <div class="sw-secs ${showCounts ? '' : 'sw-nocounts'}">${o.map(function (id) { return sectionCard(id, lab); }).join('')}</div>
-        <button class="sw-addsec" data-act="ed-add">+ Add section</button>
-        ${showCounts ? '<div class="sw-legend"><span>8 = syllables</span><span><b>A</b> = rhymes</span><span>dashed = near · dotted = vowel</span><span>tap a letter to change</span></div>' : '<div class="sw-legend"></div>'}
+        <div class="sw-box ${showCounts ? '' : 'sw-nocounts'}"><div class="sw-tawrap">
+          <textarea class="sw-ta sw-one" data-body="song" rows="1" placeholder="Tap to write… Start a line with # for a section title (# Chorus)." autocapitalize="sentences" spellcheck="true">${esc(SW.songs.sheetText(rows))}</textarea>
+          <div class="sw-gutter" data-gutter></div><div class="sw-mirror" aria-hidden="true"></div></div></div>
+        ${showCounts ? '<div class="sw-legend"><span># Chorus = section title</span><span>8 = syllables</span><span><b>A</b> = rhymes</span><span>dashed = near · dotted = vowel</span><span>tap a letter to change</span></div>' : '<div class="sw-legend"><span># Chorus = section title</span></div>'}
         ${undoBar()}`;
     }
 
@@ -280,9 +257,7 @@
     // ---------- Pop-ups ----------
     function sheet() {
       var body = '';
-      if (state.sheet === 'ed-menu') body = sectionMenu(secs[state.lyMenu]);
-      else if (state.sheet === 'ed-add') body = tagPicker('ed-addtag', null, 'Add a section');
-      else if (state.sheet === 'ed-link') body = letterMenu();
+      if (state.sheet === 'ed-link') body = letterMenu();
       else if (state.sheet === 'ed-songmenu') body = `<div class="sw-sheet-title">${esc(song ? song.title || 'Untitled' : '')}<button data-act="close-sheet">Done</button></div>
         <button class="sw-mitem" data-act="ed-copy">Copy lyrics <span>to paste anywhere</span></button>
         ${store && store.canDeleteSong === false ? '' : '<button class="sw-mitem sw-red" data-act="ed-delsong">Delete song <span>Undo for 10 s</span></button>'}`;
@@ -291,10 +266,12 @@
         <div class="sw-sheet"><div class="sw-sheet-head" data-sheet-grab><div class="sw-grab"></div></div>${body}</div>`;
     }
 
+    function rowOf(key) { return rows.filter(function (r) { return r.key === key; })[0]; }
+
     /** Pick a word's rhyme letter: Auto, A, B, C… or None. Same letter = they rhyme. Works for line
-        endings (tap the letter) and any other word (Letter on the word bar), for inner rhymes. */
+        endings (tap the letter) and any other word (A·B on the word bar), for inner rhymes. */
     function letterMenu() {
-      var x = secs[state.lyMenu], dict = ctx.dict(), word = state.lyPickWord;
+      var x = rowOf(state.lyMenu), dict = ctx.dict(), word = state.lyPickWord;
       if (!x || !dict || !word) return '';
       var picked = x.rhyme_letters || {};
       var sch = R.rhymeScheme(dict, x.body.split('\n'), picked);
@@ -317,34 +294,6 @@
       return `<div class="sw-sheet-title"><span class="sw-keepcase">Rhyme letter for “${esc(me.end)}”</span><button data-act="close-sheet">Done</button></div>
         <div class="sw-whelp">Words with the same letter rhyme. ${mine ? 'Auto lets the dictionary decide' + (cur === 'auto' && me.letter ? ` (now ${me.letter})` : '') + '.' : 'Give a word in the middle of a line a letter to mark an inner rhyme.'}</div>
         <div class="sw-letters">${btn('auto', 'Auto')}${letters.map(function (L) { return btn(L, L, (users[L] || []).slice(0, 2).join(', ')); }).join('')}${btn('-', 'None')}</div>`;
-    }
-
-    /** Section type buttons plus a Custom… box (with names used before in this song). */
-    function tagPicker(act, current, title) {
-      var used = [];
-      Object.keys(secs).forEach(function (id) { var t = secs[id].tag; if (TAGS.indexOf(t) < 0 && used.indexOf(t) < 0 && !secs[id].repeat_of) used.push(t); });
-      return `<div class="sw-sheet-title">${esc(title)}<button data-act="close-sheet">Done</button></div>
-        <div class="sw-sub">Section type</div>
-        <div class="sw-scales">${TAGS.map(function (t) { return `<button class="${t === current ? 'sw-on' : ''}" data-act="${act}" data-arg="${t}">${t}</button>`; }).join('')}
-        ${used.map(function (t) { return `<button class="sw-keepcase ${t === current ? 'sw-on' : ''}" data-act="${act}" data-arg="${esc(t)}">${esc(t)}</button>`; }).join('')}</div>
-        <div class="sw-sub">Custom name</div>
-        <form class="sw-find" data-custom="${act}"><input class="sw-input" name="tag" maxlength="40" placeholder="e.g. Breakdown, Chorus 2 (half time)" autocomplete="off">
-          <button class="sw-findbtn" type="submit">Use</button></form>`;
-    }
-
-    function sectionMenu(x) {
-      if (!x) return '';
-      var o = order(), i = o.indexOf(x.id);
-      var moves = `<button class="sw-mitem" data-act="ed-move" data-arg="-1" ${i <= 0 ? 'disabled' : ''}>Move up</button>
-        <button class="sw-mitem" data-act="ed-move" data-arg="1" ${i >= o.length - 1 ? 'disabled' : ''}>Move down</button>`;
-      if (x.repeat_of) {
-        return `<div class="sw-sheet-title">Repeat<button data-act="close-sheet">Done</button></div>${moves}
-          <button class="sw-mitem sw-red" data-act="ed-delete">Remove repeat <span>Undo for 10 s</span></button>`;
-      }
-      return tagPicker('ed-tag', x.tag, 'Section') +
-        `<div class="sw-mlist">${moves}
-        <button class="sw-mitem" data-act="ed-dup">Duplicate</button>
-        <button class="sw-mitem sw-red" data-act="ed-delete">Delete section <span>Undo for 10 s</span></button></div>`;
     }
 
     // ---------- Saving ----------
@@ -372,6 +321,49 @@
     }
     ctx.on(root, 'online', function () { if (saveError) flush(); });
 
+    /** Adding and removing sections: one at a time, in order, then everyone's positions are saved. */
+    function structural(run) {
+      structBusy++; showStatus();
+      structChain = structChain.then(run).then(function () { saveError = false; }, function () { saveError = true; })
+        .then(function () {
+          structBusy--;
+          if (!structBusy && song && store) {
+            var ids = rows.filter(function (r) { return r.id; }).map(function (r) { return r.id; });
+            if (store.positional) ids.forEach(function (id, i) { if (secs[id]) secs[id].position = i; }); else song.section_order = ids;
+            return store.setOrder(song.id, ids).catch(function () { saveError = true; });
+          }
+        })
+        .then(function () { showStatus(); if (!structBusy && needsReload && !typing()) reloadSong(); });
+    }
+    /** The order to save with a new section ("NEW" where it goes; sections still being added are left out). */
+    function orderWith(row) {
+      return rows.filter(function (r) { return r === row || r.id; }).map(function (r) { return r === row ? 'NEW' : r.id; });
+    }
+    function addRow(row) {
+      structural(function () {
+        if (row.dead) return;
+        return store.addSection(song.id, { tag: row.tag, body: row.body }, orderWith(row)).then(function (r) {
+          var sec = r.section;
+          secs[sec.id] = sec; row.id = sec.id;
+          if (row.dead) { delete secs[sec.id]; row.id = null; return store.setSectionDeleted(sec.id, song.id, true, rows.filter(function (x) { return x.id; }).map(function (x) { return x.id; })); }
+          var later = {};   // typed while it was being added
+          if (row.tag !== sec.tag) later.tag = row.tag;
+          if (row.body !== (sec.body || '')) later.body = row.body;
+          if (Object.keys(later).length) queue(sec.id, later);
+        });
+      });
+    }
+    function removeRow(row) {
+      row.dead = true;
+      if (!row.id) return;   // still being added: addRow takes it away again when it lands
+      var id = row.id;
+      delete pending[id];
+      structural(function () {
+        delete secs[id];
+        return store.setSectionDeleted(id, song.id, true, rows.filter(function (x) { return x.id && x.id !== id; }).map(function (x) { return x.id; }));
+      });
+    }
+
     function saveTitle(title) {
       clearTimeout(titleTimer);
       song.title = title;
@@ -387,7 +379,7 @@
       if (s) s.outerHTML = status();
     }
 
-    /** Runs a change that the store saves right away (add, move, delete…), then redraws. */
+    /** Runs a change that the store saves right away (a song deleted…), then redraws. */
     function change(promise) {
       saving = true;
       return promise.then(function (r) { saveError = false; return r; })
@@ -404,42 +396,139 @@
       }, UNDO_MS) };
     }
 
-    // ---------- Typing (no full redraws) ----------
-    /** Redraw everything except the section being typed in, without closing the keyboard. */
-    function redrawQuietly() {
-      var ta = ctx.el.querySelector('[data-body]');
-      if (!ta || document.activeElement !== ta) { ctx.render(); return; }
-      var o = order(), lab = labels(o, secs);
-      ctx.el.querySelectorAll('[data-sec]').forEach(function (card) {
-        var id = card.dataset.sec;
-        if (id === state.lyEditing) return;
-        if (!secs[id]) card.remove();
-        else card.outerHTML = sectionCard(id, lab);
+    // ---------- The text box ----------
+    function box() { return ctx.el.querySelector('[data-body]'); }
+    function typing() { var ta = box(); return !!(ta && document.activeElement === ta); }
+
+    /** Something was typed (or undone): match the box back to the sections and save what changed. */
+    function textChanged(ta) {
+      var now = Date.now();
+      var after = SW.songs.parseSheet(ta.value);
+      var m = SW.songs.matchSections(rows, after);
+      var byKey = {}; rows.forEach(function (r) { byKey[r.key] = r; });
+      var next = after.map(function (s, i) {
+        var r = m.keys[i] && byKey[m.keys[i]];
+        if (!r) {
+          r = { key: 'new' + (++newKey), id: null, tag: s.tag, body: s.body, rhyme_letters: {}, editedAt: now };
+          r.isNew = true;
+          return r;
+        }
+        var patch = {};
+        if (r.tag !== s.tag) patch.tag = r.tag = s.tag;
+        if (r.body !== s.body) patch.body = r.body = s.body;
+        if (Object.keys(patch).length) { r.editedAt = now; if (r.id) queue(r.id, patch); }
+        return r;
       });
-      var title = ctx.el.querySelector('[data-title]');
-      if (title && document.activeElement !== title) title.value = song.title || '';
+      // Joined into the section above (title erased): its picked rhyme letters come along.
+      m.removed.forEach(function (gone) {
+        var g = byKey[gone.key], into = gone.into && byKey[gone.into];
+        if (g && into && next.indexOf(into) >= 0 && Object.keys(g.rhyme_letters || {}).length) {
+          into.rhyme_letters = Object.assign({}, g.rhyme_letters, into.rhyme_letters);
+          if (into.id) queue(into.id, { rhyme_letters: into.rhyme_letters });
+        }
+      });
+      rows = next;
+      m.removed.forEach(function (gone) { removeRow(byKey[gone.key]); });
+      rows.forEach(function (r) { if (r.isNew) { delete r.isNew; addRow(r); } });
+      rows.forEach(function (r) { if (r.id && secs[r.id]) { secs[r.id].tag = r.tag; secs[r.id].body = r.body; } });
+      drawBox(ta);
+      updateWordBar(ta);
     }
 
-    /** Line counts and rhyme letters next to the textarea, lined up with each line even when it wraps.
-        The mirror is a copy of the text behind the textarea, laid out the same way: its letters are
-        invisible, but it draws the colored rhyme underlines, which show through under what you type. */
-    function updateGutter(ta) {
-      var id = ta.dataset.body, wrap = ta.parentNode, mirror = wrap.querySelector('.sw-mirror'), gutter = wrap.querySelector('[data-gutter]');
-      var lines = ta.value.split('\n');
-      var dict = ctx.dict(), sch = dict ? R.rhymeScheme(dict, lines, secs[id] && secs[id].rhyme_letters) : null;
-      mirror.innerHTML = lines.map(function (l, i) { return `<div>${underlined(l, sch && sch.lines[i]) || '&#8203;'}</div>`; }).join('');
+    /** Where each line of the box belongs: [{ title, row (index in rows), line (index in that section) }]. */
+    function lineMap(text) {
+      var out = [], sec = -1, at = 0;
+      text.split('\n').forEach(function (l) {
+        if (/^#/.test(l)) { sec++; at = 0; out.push({ title: true, row: sec, line: -1 }); return; }
+        if (sec < 0) sec = 0;
+        out.push({ title: false, row: sec, line: at++ });
+      });
+      return out;
+    }
+    function caretLine(ta) {
+      if (!ta || document.activeElement !== ta) return -1;
+      return ta.value.slice(0, ta.selectionStart).split('\n').length - 1;
+    }
+
+    /** Draw the mirror (the visible text) and the gutter (counts and rhyme letters), lined up with the
+        box's lines even when they wrap, and size the box to fit. */
+    var drawnCaretLine = null;
+    function drawBox(ta) {
+      if (!ta) return;
+      var wrap = ta.parentNode, mirror = wrap.querySelector('.sw-mirror'), gutter = wrap.querySelector('[data-gutter]');
+      var text = ta.value, lines = text.split('\n'), map = lineMap(text), dict = ctx.dict(), cl = caretLine(ta);
+      drawnCaretLine = cl;
+      var schemes = rows.map(function (r) { return dict && r.body.trim() ? R.rhymeScheme(dict, r.body.split('\n'), r.rhyme_letters) : null; });
+      mirror.innerHTML = lines.map(function (l, i) {
+        var at = map[i];
+        if (at.title) {
+          // The "#" is hidden (its space kept, so the lines still wrap the same) and the title slides
+          // left over it, unless the cursor is on this line: then you see and can erase the "#".
+          if (i === cl) return `<div class="sw-tl">${esc(l) || '&#8203;'}</div>`;
+          var hash = /^#\s*/.exec(l)[0];
+          return `<div class="sw-tl"><span class="sw-hash">${esc(hash)}</span><span class="sw-tt">${esc(l.slice(hash.length)) || '&#8203;'}</span></div>`;
+        }
+        var sch = schemes[at.row];
+        return `<div>${underlined(l, sch && sch.lines[at.line]) || '&#8203;'}</div>`;
+      }).join('');
+      [].forEach.call(mirror.querySelectorAll('.sw-hash'), function (h) { h.nextSibling.style.left = '-' + h.getBoundingClientRect().width + 'px'; });
       ta.style.height = 'auto';
-      ta.style.height = Math.max(ta.scrollHeight, mirror.offsetHeight) + 'px';   // same height as the reading lines
+      ta.style.height = Math.max(ta.scrollHeight, mirror.offsetHeight) + 'px';
       var wrapTop = wrap.getBoundingClientRect().top;   // exact (offsetTop rounds to whole pixels and drifts)
       var tops = [].map.call(mirror.children, function (d) { return d.getBoundingClientRect().top - wrapTop; });
       gutter.innerHTML = lines.map(function (l, i) {
-        if (!l.trim() || !sch) return '';
-        var info = sch.lines[i];
-        // Tappable while typing too: opens the rhyme letter picker for this line.
-        return `<button class="sw-gl" style="top:${tops[i]}px" data-act="ed-link" data-id="${id}" data-line="${i}" aria-label="Choose the rhyme letter for this line"><span class="sw-ls">${info.syllables}</span>${letterChip(info)}</button>`;
+        var at = map[i], sch = schemes[at.row], r = rows[at.row];
+        if (at.title) return sch && sch.scheme ? `<span class="sw-gs" style="top:${tops[i]}px">${esc(sch.scheme)}</span>` : '';
+        if (!l.trim() || !sch || !r) return '';
+        var info = sch.lines[at.line];
+        // Tap to pick this line's rhyme letter.
+        return `<button class="sw-gl" style="top:${tops[i]}px" data-act="ed-link" data-key="${esc(r.key)}" data-line="${at.line}" aria-label="Choose the rhyme letter for this line"><span class="sw-ls">${info.syllables}</span>${letterChip(info)}</button>`;
       }).join('');
-      var sc = ctx.el.querySelector(`[data-scheme="${id}"]`);
-      if (sc) sc.textContent = sch ? sch.scheme : '';
+    }
+
+    /** Someone else saved: put their change in the box. Never the section you're typing in (or have
+        just typed in, or is still saving): yours wins there, like everywhere in Setlist. A section
+        added or removed elsewhere shows once you stop typing. */
+    function onLive(ev) {
+      if (!song) return;
+      var r = ev.row;
+      if (ev.table === 'songs' && r && r.id === song.id) {
+        var titleBox = ctx.el.querySelector('[data-title]');
+        var typingTitle = titleBox && document.activeElement === titleBox;
+        song = Object.assign({}, song, r, typingTitle ? { title: song.title } : {});
+        if (r.deleted_at) { closeSong(); ctx.render(); return; }
+        if (!typing()) ctx.render();
+        return;
+      }
+      if (ev.table !== 'sections' || !r || !r.id) return;
+      var row = rows.filter(function (x) { return x.id === r.id; })[0];
+      if (!row) {
+        if (r.deleted_at || structBusy) return;   // gone already, or our own new section arriving
+        needsReload = true;
+        if (!typing()) reloadSong();
+        return;
+      }
+      if (r.deleted_at) { if (row.dead) return; needsReload = true; if (!typing()) reloadSong(); return; }
+      var ta = box(), cl = caretLine(ta), here = cl >= 0 ? lineMap(ta.value)[cl] : null;
+      var mine = here && rows[here.row] === row;
+      if (mine || pending[r.id] || Date.now() - row.editedAt < 3000) return;
+      var tag = r.tag == null ? '' : r.tag, body = r.body || '';
+      secs[r.id] = Object.assign(secs[r.id] || {}, r);
+      if (row.tag === tag && row.body === body && JSON.stringify(row.rhyme_letters || {}) === JSON.stringify(r.rhyme_letters || {})) return;
+      if (!typing()) {
+        row.tag = tag; row.body = body; row.rhyme_letters = r.rhyme_letters || {};
+        ctx.render();
+        return;
+      }
+      // While typing elsewhere in the box: swap that section's text in and keep the cursor where it was.
+      var k = rows.indexOf(row), a = ta.selectionStart, b = ta.selectionEnd;
+      var startOf = SW.songs.sheetText(rows.slice(0, k + 1)).length, before = SW.songs.sheetText(rows).length;
+      row.tag = tag; row.body = body; row.rhyme_letters = r.rhyme_letters || {};
+      var shift = SW.songs.sheetText(rows).length - before, after = a >= startOf;
+      ta.value = SW.songs.sheetText(rows);
+      ta.setSelectionRange(after ? a + shift : a, after ? b + shift : b);
+      typingHist = null;   // our undo steps would undo their change
+      drawBox(ta);
     }
 
     /** The word the cursor is on (or the selected word). */
@@ -457,7 +546,9 @@
     function updateWordBar(ta) {
       var bar = ctx.el.querySelector('[data-wordbar]');
       if (!bar) return;
-      var w = ta && document.activeElement === ta ? wordAtCursor(ta) : '';
+      var cl = caretLine(ta);
+      var onTitle = cl >= 0 && /^#/.test(ta.value.split('\n')[cl] || '');
+      var w = cl >= 0 && !onTitle ? wordAtCursor(ta) : '';
       if (!w) { bar.hidden = true; barWord = ''; var a = scrollParent(ctx.el); if (a) a.style.scrollPaddingTop = ''; return; }
       bar.hidden = false;
       placeBar(bar);
@@ -486,39 +577,36 @@
       if (area) area.style.scrollPaddingTop = bar.offsetHeight + 'px';
     }
 
-    // ---------- Typing undo (⌘Z / ⌘⇧Z while typing lyrics, 2.0.8.2) ----------
-    // Per section: a burst of typing (until a pause of TYPING_BURST_MS) is one step. Kept while the
-    // song is open, also when you move between sections.
+    /** The cursor moved: show the "#" of the title it's on (and hide the one it left), update the word bar. */
+    function caretMoved(ta) {
+      if (caretLine(ta) !== drawnCaretLine) drawBox(ta);
+      updateWordBar(ta);
+    }
+
+    // ---------- Typing undo (⌘Z / ⌘⇧Z in the lyrics, 2.0.8.2) ----------
+    // A burst of typing (until a pause of TYPING_BURST_MS) is one step. Kept while the song is open.
     var TYPING_BURST_MS = 1000;
-    var typingHist = {};   // section id → { undo: [state], redo: [state], cur: state, at: time of last typing }
+    var typingHist = null;   // { undo: [state], redo: [state], cur: state, at: time of last typing }
     var stateOf = function (ta) { return { value: ta.value, a: ta.selectionStart, b: ta.selectionEnd }; };
-    function histFor(ta) {
-      var id = ta.dataset.body;
-      if (!typingHist[id]) typingHist[id] = { undo: [], redo: [], cur: stateOf(ta), at: 0 };
-      return typingHist[id];
+    function hist(ta) {
+      if (!typingHist) typingHist = { undo: [], redo: [], cur: stateOf(ta), at: 0 };
+      return typingHist;
     }
     function noteTyping(ta) {
-      var h = histFor(ta), now = Date.now();
+      var h = hist(ta), now = Date.now();
       if (h.cur.value === ta.value) { h.cur = stateOf(ta); return; }
       if (now - h.at >= TYPING_BURST_MS) { h.undo.push(h.cur); if (h.undo.length > 200) h.undo.shift(); }
       h.redo = [];
       h.cur = stateOf(ta); h.at = now;
     }
-    function bodyChanged(ta) {
-      var id = ta.dataset.body;
-      if (secs[id]) secs[id].body = ta.value;
-      queue(id, { body: ta.value });
-      updateGutter(ta);
-      updateWordBar(ta);
-    }
     function undoTyping(ta, redo) {
-      var h = histFor(ta), from = redo ? h.redo : h.undo, to = redo ? h.undo : h.redo;
+      var h = hist(ta), from = redo ? h.redo : h.undo, to = redo ? h.undo : h.redo;
       if (!from.length) return;
       to.push(stateOf(ta));
       var s = from.pop();
       ta.value = s.value; ta.setSelectionRange(s.a, s.b);
       h.cur = s; h.at = 0;   // the next letter starts a new step
-      bodyChanged(ta);
+      textChanged(ta);
     }
     ctx.el.addEventListener('keydown', function (e) {
       var t = e.target;
@@ -526,116 +614,65 @@
       e.preventDefault(); e.stopPropagation();   // not the browser's undo, not the Setlist app's
       undoTyping(t, e.shiftKey);
     });
-    ctx.el.addEventListener('focusin', function (e) { if (e.target.matches && e.target.matches('[data-body]')) histFor(e.target); });
+    ctx.el.addEventListener('focusin', function (e) { if (e.target.matches && e.target.matches('[data-body]')) { hist(e.target); caretMoved(e.target); } });
 
     ctx.el.addEventListener('input', function (e) {
       var t = e.target;
       if (t.matches && t.matches('[data-body]')) {
         noteTyping(t);
-        var id = t.dataset.body;
-        if (secs[id]) secs[id].body = t.value;
-        queue(id, { body: t.value });
-        updateGutter(t);
-        updateWordBar(t);
+        textChanged(t);
       } else if (t.matches && t.matches('[data-title]') && song) {
         saveTitle(t.value);
       }
     });
-    ['keyup', 'click', 'focusin'].forEach(function (type) {
-      ctx.el.addEventListener(type, function (e) { if (e.target.matches && e.target.matches('[data-body]')) updateWordBar(e.target); });
+    ['keyup', 'click'].forEach(function (type) {
+      ctx.el.addEventListener(type, function (e) { if (e.target.matches && e.target.matches('[data-body]')) caretMoved(e.target); });
     });
     ctx.on(document, 'selectionchange', function () {
-      var ta = ctx.el.querySelector('[data-body]');
-      if (ta && document.activeElement === ta) updateWordBar(ta);
+      var ta = box();
+      if (ta && document.activeElement === ta) caretMoved(ta);
     });
     ctx.el.addEventListener('focusout', function (e) {
-      if (e.target.matches && e.target.matches('[data-body]')) setTimeout(function () { updateWordBar(null); flush(); }, 150);
+      if (!(e.target.matches && e.target.matches('[data-body]'))) return;
+      setTimeout(function () {
+        var ta = box();
+        updateWordBar(null);
+        if (ta && document.activeElement !== ta) drawBox(ta);   // hide the "#" again
+        flush();
+        if (needsReload && !structBusy) reloadSong();
+      }, 150);
     });
     // Tapping the word bar mustn't take focus from the lyrics (that would close the keyboard first).
     ['pointerdown', 'mousedown'].forEach(function (type) {
       ctx.el.addEventListener(type, function (e) { if (e.target.closest && e.target.closest('[data-wordbar]')) e.preventDefault(); });
     });
-    ctx.el.addEventListener('submit', function (e) {
-      var f = e.target.closest('[data-custom]');
-      if (!f) return;
-      e.preventDefault();
-      var name = f.querySelector('input').value.trim().replace(/\s+/g, ' ');
-      if (name && act(f.dataset.custom, { arg: name })) ctx.render();
-    });
 
-    /** After each redraw: size the textarea, line up its gutter, and put the cursor back. */
-    function afterRender() {
-      var ta = ctx.el.querySelector('[data-body]');
-      if (!ta) return;
-      updateGutter(ta);
-      if (afterRender.focusNext) {
-        afterRender.focusNext = false;
-        ta.focus();
-        // The cursor goes where you tapped (2.0.8.2); otherwise at the end.
-        var at = afterRender.caretAt != null ? Math.min(afterRender.caretAt, ta.value.length) : ta.value.length;
-        afterRender.caretAt = null;
-        ta.setSelectionRange(at, at);
-      }
-    }
+    /** After each redraw: draw the box's text, counts and letters. */
+    function afterRender() { drawBox(box()); }
+    function refresh() { var ta = box(); drawBox(ta); if (ta) updateWordBar(ta); showStatus(); }
 
     // ---------- Taps ----------
-    // Where the last tap was, so tapping a word puts the cursor on that word.
-    var lastTap = null;
-    ctx.el.addEventListener('pointerdown', function (e) { lastTap = { x: e.clientX, y: e.clientY }; }, true);
-    /** The character in section id's text under the last tap (null if it wasn't on a line). */
-    function tapOffset(id) {
-      var box = lastTap && ctx.el.querySelector('.sw-lines[data-id="' + id + '"]');
-      var x = box && secs[id];
-      if (!box || !x || !x.body.trim()) return null;
-      var rows = box.querySelectorAll('.sw-ln'), lines = x.body.split('\n');
-      if (rows.length !== lines.length) return null;
-      for (var i = 0; i < rows.length; i++) {
-        var r = rows[i].getBoundingClientRect();
-        if (lastTap.y < r.top || lastTap.y >= r.bottom) continue;
-        var before = 0;
-        for (var k = 0; k < i; k++) before += lines[k].length + 1;
-        var lt = rows[i].querySelector('.sw-lt'), col = lines[i].length;
-        var pos = document.caretPositionFromPoint ? document.caretPositionFromPoint(lastTap.x, lastTap.y)
-          : document.caretRangeFromPoint ? (function (rg) { return rg && { offsetNode: rg.startContainer, offset: rg.startOffset }; })(document.caretRangeFromPoint(lastTap.x, lastTap.y)) : null;
-        if (lt && pos && lt.contains(pos.offsetNode)) {
-          col = 0;
-          var walk = document.createTreeWalker(lt, NodeFilter.SHOW_TEXT), n;
-          while ((n = walk.nextNode())) { if (n === pos.offsetNode) { col += pos.offset; break; } col += n.textContent.length; }
-        }
-        return before + Math.min(col, lines[i].length);
-      }
-      return null;
-    }
-
     function act(name, d) {
-      var x = state.lyMenu && secs[state.lyMenu];
-      var o, i, lab;
+      var x = state.lyMenu && rowOf(state.lyMenu);
       switch (name) {
         case 'ed-retry': storeProblem = null; store = null; list = null; connect(); break;
         case 'ed-new':
           change(store.create('Untitled').then(function (r) {
             song = r.song; secs = {}; r.sections.forEach(function (s) { secs[s.id] = s; });
-            state.lyView = 'song'; state.lySong = song.id; state.lyEditing = r.sections[0].id;
-            afterRender.focusNext = true;
+            rowsFromSaved();
+            state.lyView = 'song'; state.lySong = song.id;
             if (stopLive) stopLive();
             stopLive = store.subscribe(song.id, onLive);
           }));
           return true;
         case 'ed-open': openSong(d.id); break;
         case 'ed-back': closeSong(); break;
-        case 'ed-edit':
-          flush();
-          afterRender.caretAt = tapOffset(d.id);   // read before the reading view is replaced
-          state.lyEditing = d.id; afterRender.focusNext = true;
-          break;
-        case 'ed-done': flush(); state.lyEditing = null; break;
         case 'ed-word': {
-          var ta = ctx.el.querySelector('[data-body]');
+          var ta = box();
           var w = ta ? wordAtCursor(ta) : barWord;
           if (w) ctx.openWord(w, d.arg);
           break;
         }
-        case 'ed-menu': flush(); state.lyMenu = d.id; state.sheet = 'ed-menu'; break;
         case 'ed-songmenu': state.sheet = 'ed-songmenu'; break;
         case 'ed-counts':
           showCounts = !showCounts;
@@ -643,19 +680,20 @@
           break;
         case 'ed-link': {   // tapped a line's letter: pick the letter for that line's last word
           flush();
-          var dk = ctx.dict(), sx = secs[d.id];
+          var dk = ctx.dict(), sx = rowOf(d.key);
           if (!dk || !sx) break;
-          state.lyMenu = d.id;
+          state.lyMenu = sx.key;
           state.lyPickWord = R.rhymeScheme(dk, sx.body.split('\n'), sx.rhyme_letters).lines[+d.line].end;
           state.sheet = 'ed-link';
           break;
         }
-        case 'ed-pickword': {   // "Letter" on the word bar: pick the letter for the word at the cursor
-          var tb = ctx.el.querySelector('[data-body]');
+        case 'ed-pickword': {   // A·B on the word bar: pick the letter for the word at the cursor
+          var tb = box();
           var pw = tb ? wordAtCursor(tb) : barWord;
-          if (!pw || !state.lyEditing) break;
+          var at = tb && lineMap(tb.value)[caretLine(tb)];
+          if (!pw || !at || !rows[at.row]) break;
           flush();
-          state.lyMenu = state.lyEditing; state.lyPickWord = pw; state.sheet = 'ed-link';
+          state.lyMenu = rows[at.row].key; state.lyPickWord = pw; state.sheet = 'ed-link';
           break;
         }
         case 'ed-letter': {
@@ -664,61 +702,8 @@
           var letters = Object.assign({}, x.rhyme_letters || {});
           if (d.arg === 'auto') delete letters[end]; else letters[end] = d.arg;
           x.rhyme_letters = letters;
-          queue(x.id, { rhyme_letters: letters }); flush();
+          if (x.id) { if (secs[x.id]) secs[x.id].rhyme_letters = letters; queue(x.id, { rhyme_letters: letters }); flush(); }
           break;
-        }
-        case 'ed-add': state.sheet = 'ed-add'; break;
-        case 'ed-addtag':
-          o = order().concat(['NEW']);
-          state.sheet = null;
-          change(store.addSection(song.id, { tag: d.arg }, o).then(function (r) {
-            secs[r.section.id] = r.section; applyOrder(r.order);
-            state.lyEditing = r.section.id; afterRender.focusNext = true;
-          }));
-          return true;
-        case 'ed-tag':
-          if (!x) break;
-          x.tag = d.arg; queue(x.id, { tag: d.arg }); flush();
-          state.sheet = null;
-          break;
-        case 'ed-dup':
-          if (!x) break;
-          o = order(); i = o.indexOf(x.id);
-          o.splice(i + 1, 0, 'NEW');
-          state.sheet = null;
-          change(store.addSection(song.id, { tag: x.tag, body: x.body }, o).then(function (r) { secs[r.section.id] = r.section; applyOrder(r.order); }));
-          return true;
-        case 'ed-move': {
-          if (!x) break;
-          o = order(); i = o.indexOf(x.id);
-          var j = i + (+d.arg);
-          if (j < 0 || j >= o.length) break;
-          o.splice(i, 1); o.splice(j, 0, x.id);
-          applyOrder(o);
-          change(store.setOrder(song.id, o));
-          return true;
-        }
-        case 'ed-delete': {
-          if (!x) break;
-          o = order(); i = o.indexOf(x.id);
-          lab = labels(o, secs);
-          var gone = x, before = o.slice();
-          o.splice(i, 1);
-          // Repeats of this section go too (they'd point at nothing).
-          var reps = Object.keys(secs).filter(function (id) { return secs[id].repeat_of === gone.id; });
-          o = o.filter(function (id) { return reps.indexOf(id) < 0; });
-          applyOrder(o);
-          delete secs[gone.id]; reps.forEach(function (id) { delete secs[id]; });
-          state.sheet = null; if (state.lyEditing === gone.id) state.lyEditing = null;
-          var all = [gone.id].concat(reps);
-          change(Promise.all(all.map(function (id) { return store.setSectionDeleted(id, song.id, true, o); })));
-          showUndo(`${gone.repeat_of ? 'Repeat' : lab[gone.id] || 'Section'} deleted`, function () {
-            secs[gone.id] = gone;
-            applyOrder(before);
-            change(Promise.all(all.map(function (id) { return store.setSectionDeleted(id, song.id, false, before); })).then(function () { return store.load(song.id); })
-              .then(function (r) { secs = {}; r.sections.forEach(function (s) { secs[s.id] = s; }); song.section_order = r.song.section_order; }));
-          });
-          return true;
         }
         case 'ed-delsong': {
           var s = song;
@@ -730,10 +715,8 @@
         }
         case 'ed-copy': {
           // The whole song as plain text: title, then each section's name and words.
-          var o2 = order(), lab2 = labels(o2, secs);
-          var text = [song.title || 'Untitled'].concat(o2.map(function (id) {
-            var s = secs[id];
-            return s.repeat_of ? '[' + (lab2[s.repeat_of] || 'Repeat') + ']' : '[' + lab2[id] + ']\n' + (s.body || '').trim();
+          var text = [song.title || 'Untitled'].concat(rows.map(function (r) {
+            return (r.tag ? '[' + r.tag + ']\n' : '') + (r.body || '').trim();
           })).join('\n\n');
           state.sheet = null;
           var done = function (ok) { showUndo(ok ? 'Lyrics copied' : 'Couldn’t copy on this device', null); ctx.render(); };
@@ -754,6 +737,8 @@
       sheet: sheet,
       act: act,
       afterRender: afterRender,
+      typing: typing,
+      refresh: refresh,
       /** Before the Songwriter is taken off the page: save what's pending, stop live updates. */
       destroy: function () {
         flush();
@@ -761,8 +746,7 @@
         if (undo) clearTimeout(undo.timer);
       },
       isBusy: function () {
-        var ta = ctx.el.querySelector('[data-body]');
-        return !!((ta && document.activeElement === ta) || saving || Object.keys(pending).length);
+        return !!(typing() || saving || structBusy || Object.keys(pending).length);
       }
     };
   }

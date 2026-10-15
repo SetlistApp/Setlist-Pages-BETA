@@ -440,16 +440,16 @@
   font-family: var(--sw-mono); font-size: 11px; font-weight: 500; display: flex; align-items: center; justify-content: center; color: var(--sw-bg);
 }
 .sw-lr.sw-none { background: transparent; }
-/* Rhyme colors: A gold, B green, C orange, D blue (then they repeat) */
-.sw-lr.sw-c1 { background: #e3a83b; } .sw-lr.sw-c2 { background: #4fae7a; } .sw-lr.sw-c3 { background: #d9704a; } .sw-lr.sw-c0 { background: #6fa3d8; }
-.sw-lr.sw-near { background: transparent; border: 1.5px dashed currentColor; }
-.sw-lr.sw-near.sw-c1 { color: #e3a83b; } .sw-lr.sw-near.sw-c2 { color: #4fae7a; } .sw-lr.sw-near.sw-c3 { color: #d9704a; } .sw-lr.sw-near.sw-c0 { color: #6fa3d8; }
-.sw-u { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; }
-.sw-u.sw-c1 { text-decoration-color: #e3a83b; } .sw-u.sw-c2 { text-decoration-color: #4fae7a; } .sw-u.sw-c3 { text-decoration-color: #d9704a; } .sw-u.sw-c0 { text-decoration-color: #6fa3d8; }
+/* Rhyme colors: A gold, B green, C orange, D blue, E purple, F pink (then they repeat; the letter
+   is always printed, so G still reads as G). Six since 2.0.8.2 (Alex). */
+.sw-k0 { --sw-rc: #e3a83b; } .sw-k1 { --sw-rc: #4fae7a; } .sw-k2 { --sw-rc: #d9704a; }
+.sw-k3 { --sw-rc: #6fa3d8; } .sw-k4 { --sw-rc: #a98be8; } .sw-k5 { --sw-rc: #e27fae; }
+.sw-lr[class*="sw-k"] { background: var(--sw-rc); }
+.sw-lr.sw-near { background: transparent; border: 1.5px dashed currentColor; color: var(--sw-rc); }
+.sw-u { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; text-decoration-color: var(--sw-rc); }
 .sw-u.sw-near { text-decoration-style: dashed; }
 .sw-u.sw-vowel { text-decoration-style: dotted; }
-.sw-lr.sw-vowel { background: transparent; border: 1.5px dotted currentColor; }
-.sw-lr.sw-vowel.sw-c1 { color: #e3a83b; } .sw-lr.sw-vowel.sw-c2 { color: #4fae7a; } .sw-lr.sw-vowel.sw-c3 { color: #d9704a; } .sw-lr.sw-vowel.sw-c0 { color: #6fa3d8; }
+.sw-lr.sw-vowel { background: transparent; border: 1.5px dotted currentColor; color: var(--sw-rc); }
 /* Tap the counts + letter to choose rhymes for a line */
 .sw-lg { display: flex; align-items: center; padding: 0 0 0 6px; flex-shrink: 0; }
 /* Rhyme letter picker */
@@ -543,7 +543,23 @@
 .sw-lg::before { content: ""; position: absolute; inset: -4px -6px -4px -10px; }   /* bigger tap area, same layout */
 .sw-ta, .sw-mirror { padding: 2px 0 0; }   /* like .sw-lines: 2px on top, nothing below */
 .sw-ta { min-height: 34px; }   /* same as .sw-lines min-height, so short and empty sections keep their height */
-.sw-gl { margin-top: -2px; }   /* lines the counts up with where they sit while reading */
+.sw-gl { margin-top: 0; }
+
+/* One text box for the whole song (2.0.8.2). The box's own letters are invisible; the mirror behind it,
+   laid out identically, draws the text: lyrics with rhyme underlines, "# Title" lines in gold with the
+   "#" hidden (its space kept, the title shifted left over it) unless the cursor is on that line. */
+.sw-ta.sw-one { color: transparent; -webkit-text-fill-color: transparent; caret-color: var(--sw-text); }
+.sw-ta.sw-one::placeholder { color: var(--sw-dim); -webkit-text-fill-color: var(--sw-dim); }
+.sw-ta.sw-one::selection { background: rgba(227, 168, 59, 0.32); }
+.sw-box .sw-mirror { color: var(--sw-text); }
+.sw-tl { color: var(--sw-gold); }
+.sw-hash { visibility: hidden; }
+.sw-tt { position: relative; }
+.sw-gs {
+  position: absolute; right: 0; height: 25.6px; display: flex; align-items: center; white-space: nowrap;
+  font-family: var(--sw-mono); font-size: 11px; letter-spacing: 0.08em; color: var(--sw-dim); pointer-events: none;
+}
+.sw-nocounts .sw-gs { display: none; }
 .sw-addsec { width: auto; min-height: 40px; border: 0; padding: 0; text-align: left; }
 .sw-countbar { display: flex; justify-content: flex-end; margin: -6px 0 6px; }
 .sw-countbar .sw-switch { font-size: 12px; color: var(--sw-dim); }
