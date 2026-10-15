@@ -462,16 +462,15 @@
       mirror.innerHTML = lines.map(function (l, i) {
         var at = map[i];
         if (at.title) {
-          // The "#" is hidden (its space kept, so the lines still wrap the same) and the title slides
-          // left over it, unless the cursor is on this line: then you see and can erase the "#".
+          // Shown in bold capitals without the "#" (2.0.8.2-beta5, Alex). The line as typed stays in
+          // place, invisible, so it takes exactly the room the box gives it; the title is drawn over it.
+          // On the cursor's line it shows as typed, so the cursor sits right and you can erase the "#".
           if (i === cl) return `<div class="sw-tl">${esc(l) || '&#8203;'}</div>`;
-          var hash = /^#\s*/.exec(l)[0];
-          return `<div class="sw-tl"><span class="sw-hash">${esc(hash)}</span><span class="sw-tt">${esc(l.slice(hash.length)) || '&#8203;'}</span></div>`;
+          return `<div class="sw-tl"><span class="sw-tlas">${esc(l)}</span><span class="sw-tlcap">${esc(l.replace(/^#\s*/, ''))}</span></div>`;
         }
         var sch = schemes[at.row];
         return `<div>${underlined(l, sch && sch.lines[at.line]) || '&#8203;'}</div>`;
       }).join('');
-      [].forEach.call(mirror.querySelectorAll('.sw-hash'), function (h) { h.nextSibling.style.left = '-' + h.getBoundingClientRect().width + 'px'; });
       ta.style.height = 'auto';
       ta.style.height = Math.max(ta.scrollHeight, mirror.offsetHeight) + 'px';
       var wrapTop = wrap.getBoundingClientRect().top;   // exact (offsetTop rounds to whole pixels and drifts)

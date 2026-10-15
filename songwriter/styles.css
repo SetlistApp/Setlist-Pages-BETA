@@ -546,15 +546,18 @@
 .sw-gl { margin-top: 0; }
 
 /* One text box for the whole song (2.0.8.2). The box's own letters are invisible; the mirror behind it,
-   laid out identically, draws the text: lyrics with rhyme underlines, "# Title" lines in gold with the
-   "#" hidden (its space kept, the title shifted left over it) unless the cursor is on that line. */
+   laid out identically, draws the text: lyrics with rhyme underlines, "# Title" lines as gold bold
+   capitals without the "#", drawn over the invisible typed line, unless the cursor is on that line. */
 .sw-ta.sw-one { color: transparent; -webkit-text-fill-color: transparent; caret-color: var(--sw-text); }
 .sw-ta.sw-one::placeholder { color: var(--sw-dim); -webkit-text-fill-color: var(--sw-dim); }
 .sw-ta.sw-one::selection { background: rgba(227, 168, 59, 0.32); }
 .sw-box .sw-mirror { color: var(--sw-text); }
-.sw-tl { color: var(--sw-gold); }
-.sw-hash { visibility: hidden; }
-.sw-tt { position: relative; }
+.sw-tl { color: var(--sw-gold); position: relative; }
+.sw-tlas { visibility: hidden; }   /* the title line as typed, keeping its room */
+.sw-tlcap {
+  position: absolute; left: 0; top: 0; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+}
 .sw-gs {
   position: absolute; right: 0; height: 25.6px; display: flex; align-items: center; white-space: nowrap;
   font-family: var(--sw-mono); font-size: 11px; letter-spacing: 0.08em; color: var(--sw-dim); pointer-events: none;
