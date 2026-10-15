@@ -268,10 +268,11 @@
     blocks.forEach(function (b) {
       var k = key(b);
       if (!b.tag) b.tag = b.lines.length && seen[k] > 1 ? 'Chorus' : 'Verse';
-      // Same words as an earlier section with this tag (or a label with nothing under it): a repeat.
+      // Same words as an earlier section with this tag (or a label with nothing under it, "Repeat Chorus"):
+      // that section again, written out in full (no linked repeats since 2.0.8.2).
       var earlier = b.lines.length ? firstOf[b.tag + '|' + k] : firstOf[b.tag];
       if ((b.repeat || !b.lines.length || earlier !== undefined) && (earlier !== undefined || firstOf[b.tag] !== undefined)) {
-        out.push({ tag: b.tag, body: '', repeatOf: earlier !== undefined ? earlier : firstOf[b.tag] });
+        out.push({ tag: b.tag, body: out[earlier !== undefined ? earlier : firstOf[b.tag]].body, repeatOf: null });
         return;
       }
       var i = out.length;   // (a label with nothing under it stays as an empty section, so the song's shape is kept)

@@ -236,11 +236,28 @@
       return `<div class="sw-sec" data-sec="${id}">${head}<div class="sw-lines" data-act="ed-edit" data-id="${id}">${linesHtml(x)}</div></div>`;
     }
 
+    /** No more repeats ("↻ Chorus") since 2.0.8.2 (Alex): a repeat becomes a normal section with the
+        words written out, edited on its own. Old ones (or ones an older app version just made) are
+        turned into copies the moment the song is on screen, and saved like any other edit. */
+    function writeOutRepeats() {
+      Object.keys(secs).forEach(function (id) {
+        var x = secs[id];
+        if (!x.repeat_of) return;
+        var from = secs[x.repeat_of];
+        while (from && from.repeat_of) from = secs[from.repeat_of];   // a repeat of a repeat
+        var patch = { repeat_of: null, tag: from ? from.tag : x.tag, body: from ? from.body || '' : x.body || '' };
+        if (from && from.rhyme_letters && Object.keys(from.rhyme_letters).length) patch.rhyme_letters = from.rhyme_letters;
+        Object.assign(x, patch);
+        queue(id, patch);
+      });
+    }
+
     function songPage() {
       connect();
       if (notFound) return '<div class="sw-wempty">Couldn’t find this song’s lyrics.</div>';
       if (store && !song && state.lySong && loadingId !== state.lySong) openSong(state.lySong);
       if (!song) return `${storeProblem ? problemBox() : '<div class="sw-wempty">Opening…</div>'}`;
+      writeOutRepeats();
       var o = order(), lab = labels(o, secs);
       return `<div class="sw-wordslot"><div class="sw-wordbar" data-wordbar hidden></div></div>
         <div class="sw-songbar">${ctx.singleSong ? '' : '<button class="sw-back" data-act="ed-back" aria-label="Back to songs">‹</button>'}
@@ -324,8 +341,7 @@
           <button class="sw-mitem sw-red" data-act="ed-delete">Remove repeat <span>Undo for 10 s</span></button>`;
       }
       return tagPicker('ed-tag', x.tag, 'Section') +
-        `<div class="sw-mlist"><button class="sw-mitem" data-act="ed-repeat">Repeat this section <span>adds “↻ ${esc(labels(o, secs)[x.id])}”</span></button>
-        ${moves}
+        `<div class="sw-mlist">${moves}
         <button class="sw-mitem" data-act="ed-dup">Duplicate</button>
         <button class="sw-mitem sw-red" data-act="ed-delete">Delete section <span>Undo for 10 s</span></button></div>`;
     }
@@ -621,13 +637,6 @@
           x.tag = d.arg; queue(x.id, { tag: d.arg }); flush();
           state.sheet = null;
           break;
-        case 'ed-repeat':
-          if (!x) break;
-          o = order(); i = o.indexOf(x.id);
-          o.splice(o.length, 0, 'NEW');   // repeats go at the end; move them where you like
-          state.sheet = null;
-          change(store.addSection(song.id, { tag: x.tag, repeat_of: x.id }, o).then(function (r) { secs[r.section.id] = r.section; applyOrder(r.order); }));
-          return true;
         case 'ed-dup':
           if (!x) break;
           o = order(); i = o.indexOf(x.id);
