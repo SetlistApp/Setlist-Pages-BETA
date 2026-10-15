@@ -556,7 +556,8 @@
 .sw-tlas { visibility: hidden; }   /* the title line as typed, keeping its room */
 .sw-tlcap {
   position: absolute; left: 0; top: 0; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+  line-height: 25.6px;   /* centred in the line, like the section names before the one-box editor (.sw-tag) */
+  font-family: var(--sw-display); font-weight: 600; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase;
 }
 .sw-gs {
   position: absolute; right: 0; height: 25.6px; display: flex; align-items: center; white-space: nowrap;
