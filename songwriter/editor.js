@@ -25,6 +25,7 @@
 
   var SAVE_AFTER_MS = 800;      // save a section this long after you stop typing
   var RETRY_MS = 5000;          // try a failed save again after this long
+  var IDLE_MS = 2000;           // another phone's change to the section you're typing in waits until you pause this long
   var UNDO_MS = 10000;          // how long "Undo" stays after deleting a song
   // Lyrics save to the Setlist app's songs (song_lyric_sections), only inside the Setlist app (it
   // passes its database client). Anywhere else (the test site) songs are practice ones kept in the
@@ -39,6 +40,10 @@
     // rhyme_letters, editedAt }. key stays the same while a new section is being saved.
     var rows = [];
     var pending = {}, saveTimer = null, saving = false, saveError = false, titleTimer = null;
+    var savingId = null;                        // the section being saved right now
+    var held = {};                              // id → another phone's newer version, waiting for you to pause typing
+    var heldTimer = null;
+    var sent = {};                              // id → the last few versions this phone saved (to know its own live echoes)
     var structChain = Promise.resolve(), structBusy = 0, newKey = 0;   // adding/removing sections, one at a time
     var needsReload = false;                    // someone else added/removed a section while we were typing
     var undo = null;                            // { text, run, timer }
@@ -149,6 +154,7 @@
         song = r.song; secs = {};
         r.sections.forEach(function (x) { secs[x.id] = x; });
         rowsFromSaved();
+        recoverUnsaved();
         stopLive = store.subscribe(id, onLive);
       }).catch(function (e) { storeProblem = problemOf(e); if (!ctx.singleSong) state.lyView = 'list'; })
         .then(function () { loadingId = null; ctx.render(); });
@@ -184,7 +190,7 @@
         a repeat ("↻ Chorus", gone since 2.0.8.2) becomes a written-out copy; a plain "Verse" gets the
         number it was shown with ("Verse 2"), since the title is now just what's typed. */
     function rowsFromSaved() {
-      var o = order(), lab = labels(o, secs);
+      var o = order(), lab = labels(o, secs), fix = {};   // secs stay as saved (they're the base for combining edits)
       o.forEach(function (id) {
         var x = secs[id];
         if (!x.repeat_of) return;
@@ -192,15 +198,15 @@
         while (from && from.repeat_of) from = secs[from.repeat_of];
         var patch = { repeat_of: null, tag: from ? lab[from.id] || from.tag : x.tag, body: from ? from.body || '' : x.body || '' };
         if (from && from.rhyme_letters && Object.keys(from.rhyme_letters).length) patch.rhyme_letters = from.rhyme_letters;
-        Object.assign(x, patch);
+        fix[id] = patch;
         queue(id, patch);
       });
       o.forEach(function (id) {
-        var x = secs[id];
-        if (x.tag === 'Verse' && lab[id] && lab[id] !== x.tag) { x.tag = lab[id]; queue(id, { tag: x.tag }); }
+        var x = Object.assign({}, secs[id], fix[id]);
+        if (x.tag === 'Verse' && lab[id] && lab[id] !== x.tag) { fix[id] = Object.assign(fix[id] || {}, { tag: lab[id] }); queue(id, { tag: lab[id] }); }
       });
       rows = o.map(function (id) {
-        var x = secs[id];
+        var x = Object.assign({}, secs[id], fix[id]);
         return { key: id, id: id, tag: x.tag == null ? '' : x.tag, body: x.body || '', rhyme_letters: x.rhyme_letters || {}, editedAt: 0 };
       });
     }
@@ -299,27 +305,183 @@
     // ---------- Saving ----------
     function queue(id, patch) {
       pending[id] = Object.assign(pending[id] || {}, patch);
+      keepUnsaved();
       clearTimeout(saveTimer);
       saveTimer = setTimeout(flush, SAVE_AFTER_MS);
       showStatus();
     }
+    /** Save the next waiting section. Sent with the section as this phone last saw it in the database,
+        so a save never replaces another phone's newer words: the store combines them (SW.songs) and
+        hands back what's saved, which is then combined into the box too. */
     function flush() {
       clearTimeout(saveTimer);
       if (saving || !song || !store) return;
       var ids = Object.keys(pending);
-      if (!ids.length) return;
-      var id = ids[0], patch = pending[id], songId = secs[id] ? secs[id].song_id : song.id;
+      if (!ids.length) { retryAdds(); return; }
+      var id = ids[0], patch = pending[id], base = secs[id], songId = base ? base.song_id : song.id;
+      var row = rows.filter(function (r) { return r.id === id; })[0];
+      var sentAs = row ? { tag: row.tag, body: row.body, rhyme_letters: row.rhyme_letters || {} } : null;
       delete pending[id];
-      saving = true; showStatus();
-      store.saveSection(id, songId, patch).then(function () { saveError = false; })
-        .catch(function () {
-          pending[id] = Object.assign({}, patch, pending[id] || {});   // keep it, and anything typed since
-          saveError = true;
-          saveTimer = setTimeout(flush, RETRY_MS);
-        })
-        .then(function () { saving = false; showStatus(); if (!saveError && Object.keys(pending).length) flush(); });
+      saving = true; savingId = id; showStatus();
+      store.saveSection(id, songId, patch, base).then(function (saved) {
+        saveError = false;
+        if (saved && saved.deleted) { dropSection(id); return; }
+        if (!saved || !saved.id) return;   // practice songs
+        remember(id, saved);
+        secs[id] = saved;
+        // Someone else saved this section in between: what landed is both versions combined. Bring
+        // their part into the box, keeping anything typed since this save went out.
+        if (row && sentAs && (saved.body !== sentAs.body || saved.tag !== sentAs.tag)) combineInto(row, sentAs, saved);
+      }).catch(function () {
+        pending[id] = Object.assign({}, patch, pending[id] || {});   // keep it, and anything typed since
+        saveError = true;
+        saveTimer = setTimeout(flush, RETRY_MS);
+      }).then(function () {
+        saving = false; savingId = null;
+        keepUnsaved();
+        showStatus();
+        applyHeld();
+        if (!saveError && Object.keys(pending).length) flush(); else if (!saveError) retryAdds();
+      });
     }
-    ctx.on(root, 'online', function () { if (saveError) flush(); });
+    ctx.on(root, 'online', function () { if (saveError) flush(); retryAdds(); });
+    // The app going to the background (switching apps, locking, swiping it closed): save now. iPhone
+    // pauses the page right after, so a save waiting for its 0.8 s would never go out.
+    ctx.on(document, 'visibilitychange', function () { if (document.visibilityState === 'hidden') { keepUnsaved(); flush(); } });
+    ctx.on(root, 'pagehide', function () { keepUnsaved(); flush(); });
+
+    // ---------- Unsaved lyrics kept on the phone (2.0.8.3) ----------
+    // Every change that isn't in the database yet is also written to the phone's storage, the moment
+    // it's typed, and only cleared once the database has it. Opening the song again (after a swipe-close,
+    // a crash, a dead battery, being offline) brings it back, combined with whatever was saved
+    // meanwhile, and saves it. Named per backend (beta and production share the phone's storage).
+    var UNSAVED_KEY = ctx.unsavedKey || null;
+    function readUnsaved() {
+      try { return JSON.parse(root.localStorage.getItem(UNSAVED_KEY)) || {}; } catch (e) { return {}; }
+    }
+    var plain = function (x) { x = x || {}; return { tag: x.tag == null ? '' : x.tag, body: x.body || '', rhyme_letters: x.rhyme_letters || {} }; };
+    function keepUnsaved() {
+      if (!UNSAVED_KEY || !song || !store || store.kind === 'practice') return;
+      var dirty = {};
+      Object.keys(pending).forEach(function (id) { dirty[id] = true; });
+      if (savingId) dirty[savingId] = true;
+      var entry = { at: Date.now(), sections: {}, added: [] };
+      rows.forEach(function (r, i) {
+        if (r.dead) return;
+        if (r.id && dirty[r.id]) entry.sections[r.id] = { base: Object.assign(plain(secs[r.id]), { updated_at: secs[r.id] ? secs[r.id].updated_at : null }), row: plain(r) };
+        else if (!r.id) entry.added.push({ index: i, tag: r.tag, body: r.body });
+      });
+      var all = readUnsaved();
+      if (Object.keys(entry.sections).length || entry.added.length) all[song.id] = entry; else delete all[song.id];
+      try {
+        if (Object.keys(all).length) root.localStorage.setItem(UNSAVED_KEY, JSON.stringify(all)); else root.localStorage.removeItem(UNSAVED_KEY);
+      } catch (e) { /* storage full or blocked: the save itself still goes out */ }
+    }
+    /** Bring back what this phone hadn't saved when the song was last open. */
+    function recoverUnsaved() {
+      var e = UNSAVED_KEY && song && readUnsaved()[song.id];
+      if (!e) return;
+      Object.keys(e.sections || {}).forEach(function (id) {
+        var h = e.sections[id], row = rows.filter(function (x) { return x.id === id; })[0];
+        if (!row || !secs[id]) return;   // deleted on another phone since: the delete wins
+        var mine = plain(h.row);
+        row.tag = mine.tag; row.body = mine.body; row.rhyme_letters = mine.rhyme_letters;
+        combineInto(row, plain(h.base), secs[id]);   // with whatever was saved meanwhile
+      });
+      (e.added || []).forEach(function (a) {
+        if (rows.some(function (r) { return r.body === a.body && r.tag === a.tag; })) return;   // it was saved after all
+        var r = { key: 'new' + (++newKey), id: null, tag: a.tag, body: a.body, rhyme_letters: {}, editedAt: 0 };
+        rows.splice(Math.min(a.index, rows.length), 0, r);
+        addRow(r);
+      });
+      keepUnsaved();
+      if (Object.keys(pending).length) { clearTimeout(saveTimer); saveTimer = setTimeout(flush, SAVE_AFTER_MS); }
+    }
+
+    /** This phone's own saves come back as live updates too: remember what was sent, to tell them apart. */
+    function remember(id, row) {
+      var l = sent[id] = (sent[id] || []).concat([{ body: row.body || '', tag: row.tag == null ? '' : row.tag }]);
+      if (l.length > 6) l.shift();
+    }
+    function isEcho(r) {
+      return (sent[r.id] || []).some(function (x) { return x.body === (r.body || '') && x.tag === (r.tag == null ? '' : r.tag); });
+    }
+
+    /** Another phone's version of a section arrived (theirs). base = the version this phone's words were
+        built on. The box gets both: their changes and this phone's own, line by line (SW.songs.mergeSection).
+        Whatever this phone still has beyond theirs stays waiting to be saved. */
+    function combineInto(row, base, theirs) {
+      var mine = { tag: row.tag, body: row.body, rhyme_letters: row.rhyme_letters || {} };
+      var t = { tag: theirs.tag == null ? '' : theirs.tag, body: theirs.body || '', rhyme_letters: theirs.rhyme_letters || {} };
+      var m = SW.songs.mergeSection(base, mine, t);
+      var same = function (a, b) { return a.tag === b.tag && a.body === b.body && JSON.stringify(a.rhyme_letters) === JSON.stringify(b.rhyme_letters); };
+      if (row.id) {
+        var left = {};   // what this phone still has that isn't saved
+        if (m.tag !== t.tag) left.tag = m.tag;
+        if (m.body !== t.body) left.body = m.body;
+        if (JSON.stringify(m.rhyme_letters) !== JSON.stringify(t.rhyme_letters)) left.rhyme_letters = m.rhyme_letters;
+        if (Object.keys(left).length) { pending[row.id] = left; clearTimeout(saveTimer); saveTimer = setTimeout(flush, SAVE_AFTER_MS); }
+        else delete pending[row.id];
+      }
+      if (same(m, mine)) return;
+      row.tag = m.tag; row.body = m.body; row.rhyme_letters = m.rhyme_letters;
+      putInBox();
+    }
+
+    /** Show the rows in the box. While typing, the text is swapped in place and the cursor stays on its line. */
+    function putInBox() {
+      var ta = box();
+      if (!ta || !typing()) { ctx.render(); return; }
+      var old = ta.value, now = SW.songs.sheetText(rows);
+      if (old === now) return;
+      var place = function (pos) {
+        var line = old.slice(0, pos).split('\n').length - 1, col = pos - (old.lastIndexOf('\n', pos - 1) + 1);
+        var nl = SW.songs.mapLine(old, now, line), lines = now.split('\n');
+        nl = Math.min(nl, lines.length - 1);
+        var start = lines.slice(0, nl).join('\n').length + (nl ? 1 : 0);
+        return start + Math.min(col, lines[nl].length);
+      };
+      var a = place(ta.selectionStart), b = place(ta.selectionEnd);
+      ta.value = now;
+      ta.setSelectionRange(a, b);
+      typingHist = null;   // our undo steps would undo their change
+      drawBox(ta);
+    }
+
+    /** Other phones' changes that waited for you to pause typing (or for this section's save). */
+    function applyHeld() {
+      clearTimeout(heldTimer);
+      var later = false;
+      Object.keys(held).forEach(function (id) {
+        var r = held[id], row = rows.filter(function (x) { return x.id === id; })[0];
+        if (!row) { delete held[id]; return; }
+        if (savingId === id || mustWait(row)) { later = true; return; }
+        delete held[id];
+        var base = secs[id];
+        if (base && base.updated_at && r.updated_at && r.updated_at <= base.updated_at) return;   // already have it
+        secs[id] = Object.assign({}, base, r);
+        combineInto(row, base || {}, r);
+      });
+      if (later) heldTimer = setTimeout(applyHeld, 500);
+    }
+    /** You're typing in this section right now (typed in the last 2 s, cursor in it). */
+    function mustWait(row) {
+      var ta = box(), cl = caretLine(ta), here = cl >= 0 ? lineMap(ta.value)[cl] : null;
+      return !!(here && rows[here.row] === row && Date.now() - row.editedAt < IDLE_MS);
+    }
+
+    /** The section was deleted on another phone while this one had changes for it: the delete wins. */
+    function dropSection(id) {
+      delete pending[id]; delete held[id];
+      needsReload = true;
+      if (!typing()) reloadSong();
+    }
+
+    /** Sections added while offline (or whose adding failed) are added again. */
+    function retryAdds() {
+      if (!song || !store || structBusy) return;
+      rows.forEach(function (r) { if (!r.id && !r.dead && !r.adding) addRow(r); });
+    }
     ctx.on(root, 'resize', function () { refitBar(); });   // turned sideways: the word bar may fit on one row now
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { refitBar(); });   // measured before the font arrived
 
@@ -342,17 +504,20 @@
       return rows.filter(function (r) { return r === row || r.id; }).map(function (r) { return r === row ? 'NEW' : r.id; });
     }
     function addRow(row) {
+      row.adding = true;
+      keepUnsaved();
       structural(function () {
         if (row.dead) return;
         return store.addSection(song.id, { tag: row.tag, body: row.body }, orderWith(row)).then(function (r) {
           var sec = r.section;
-          secs[sec.id] = sec; row.id = sec.id;
+          row.adding = false;
+          secs[sec.id] = sec; row.id = sec.id; remember(sec.id, sec);
           if (row.dead) { delete secs[sec.id]; row.id = null; return store.setSectionDeleted(sec.id, song.id, true, rows.filter(function (x) { return x.id; }).map(function (x) { return x.id; })); }
           var later = {};   // typed while it was being added
           if (row.tag !== sec.tag) later.tag = row.tag;
           if (row.body !== (sec.body || '')) later.body = row.body;
-          if (Object.keys(later).length) queue(sec.id, later);
-        });
+          if (Object.keys(later).length) queue(sec.id, later); else keepUnsaved();
+        }, function (e) { row.adding = false; keepUnsaved(); setTimeout(retryAdds, RETRY_MS); throw e; });
       });
     }
     function removeRow(row) {
@@ -432,7 +597,6 @@
       rows = next;
       m.removed.forEach(function (gone) { removeRow(byKey[gone.key]); });
       rows.forEach(function (r) { if (r.isNew) { delete r.isNew; addRow(r); } });
-      rows.forEach(function (r) { if (r.id && secs[r.id]) { secs[r.id].tag = r.tag; secs[r.id].body = r.body; } });
       drawBox(ta);
       updateWordBar(ta);
     }
@@ -487,9 +651,12 @@
       }).join('');
     }
 
-    /** Someone else saved: put their change in the box. Never the section you're typing in (or have
-        just typed in, or is still saving): yours wins there, like everywhere in Setlist. A section
-        added or removed elsewhere shows once you stop typing. */
+    /** Someone else saved: put their change in the box, combined with this phone's own (combineInto),
+        so neither phone's words are lost. In the section you're typing in, it waits until you pause for
+        2 s (or until that section's save is back), then comes in with your cursor kept on its line.
+        Before 2.0.8.3 a change to the cursor's section was dropped for good, and the next keystroke
+        there saved over it (Sick One, Oct 2026). A section added or removed elsewhere shows once you
+        stop typing. */
     function onLive(ev) {
       if (!song) return;
       var r = ev.row;
@@ -509,28 +676,15 @@
         if (!typing()) reloadSong();
         return;
       }
-      if (r.deleted_at) { if (row.dead) return; needsReload = true; if (!typing()) reloadSong(); return; }
-      var ta = box(), cl = caretLine(ta), here = cl >= 0 ? lineMap(ta.value)[cl] : null;
-      var mine = here && rows[here.row] === row;
-      if (mine || pending[r.id] || Date.now() - row.editedAt < 3000) return;
-      var tag = r.tag == null ? '' : r.tag, body = r.body || '';
-      secs[r.id] = Object.assign(secs[r.id] || {}, r);
-      if (row.tag === tag && row.body === body && JSON.stringify(row.rhyme_letters || {}) === JSON.stringify(r.rhyme_letters || {})) return;
-      if (!typing()) {
-        row.tag = tag; row.body = body; row.rhyme_letters = r.rhyme_letters || {};
-        ctx.render();
-        return;
-      }
-      // While typing elsewhere in the box: swap that section's text in and keep the cursor where it was.
-      var k = rows.indexOf(row), a = ta.selectionStart, b = ta.selectionEnd;
-      var startOf = SW.songs.sheetText(rows.slice(0, k + 1)).length, before = SW.songs.sheetText(rows).length;
-      row.tag = tag; row.body = body; row.rhyme_letters = r.rhyme_letters || {};
-      var shift = SW.songs.sheetText(rows).length - before, after = a >= startOf;
-      ta.value = SW.songs.sheetText(rows);
-      ta.setSelectionRange(after ? a + shift : a, after ? b + shift : b);
-      typingHist = null;   // our undo steps would undo their change
-      drawBox(ta);
+      if (r.deleted_at) { if (row.dead) return; delete pending[r.id]; needsReload = true; if (!typing()) reloadSong(); return; }
+      var base = secs[r.id];
+      if (base && base.updated_at && r.updated_at && r.updated_at <= base.updated_at) return;   // not newer than what we have
+      if (isEcho(r)) { secs[r.id] = Object.assign({}, base, r); return; }   // this phone's own save coming back
+      if (savingId === r.id || mustWait(row)) { held[r.id] = r; applyHeldLater(); return; }
+      secs[r.id] = Object.assign({}, base, r);
+      combineInto(row, base || {}, r);
     }
+    function applyHeldLater() { clearTimeout(heldTimer); heldTimer = setTimeout(applyHeld, 500); }
 
     /** The word the cursor is on (or the selected word). */
     function wordAtCursor(ta) {
@@ -729,7 +883,7 @@
           var letters = Object.assign({}, x.rhyme_letters || {});
           if (d.arg === 'auto') delete letters[end]; else letters[end] = d.arg;
           x.rhyme_letters = letters;
-          if (x.id) { if (secs[x.id]) secs[x.id].rhyme_letters = letters; queue(x.id, { rhyme_letters: letters }); flush(); }
+          if (x.id) { queue(x.id, { rhyme_letters: letters }); flush(); }
           break;
         }
         case 'ed-delsong': {
@@ -768,6 +922,7 @@
       refresh: refresh,
       /** Before the Songwriter is taken off the page: save what's pending, stop live updates. */
       destroy: function () {
+        keepUnsaved();
         flush();
         if (stopLive) { stopLive(); stopLive = null; }
         if (undo) clearTimeout(undo.timer);

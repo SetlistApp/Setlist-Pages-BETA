@@ -1079,6 +1079,7 @@
     const editor = SW.editor.create({
       el, state, render, esc, findBox, on,
       client: opts.client, who: opts.who, singleSong: !!opts.songId,
+      unsavedKey: opts.unsavedKey,   // where unsaved lyrics are kept on the phone (per backend), from the Setlist app
       dict: () => { needWords(); return dictState === 'ready' ? dict : null; },
       openWord: (word, tab) => {
         lookup(word, false);

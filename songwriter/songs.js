@@ -21,11 +21,120 @@
   /** Section ids in order (by position). */
   var orderOf = function (secs) { return secs.slice().sort(function (a, b) { return a.position - b.position; }).map(function (s) { return s.id; }); };
 
+  // ---------- Combining two phones' changes to one section (2.0.8.3) ----------
+  // Two people can type in the same section. Saving one phone's copy over the whole section would wipe
+  // the other's new lines (it happened: Sick One, Oct 2026). So changes are combined line by line,
+  // the way a version-control tool does it: from the version both started from (base), each side's
+  // changes are kept. Where both changed the same lines, both versions are kept, theirs first and
+  // yours right under it (Alex's call), so nothing is ever lost; delete the one you don't want.
+
+  /** Pairs [i, j] of lines that stay the same between a and b (longest common subsequence). */
+  function sameLines(a, b) {
+    var n = a.length, m = b.length, L = [];
+    for (var i = 0; i <= n; i++) { L.push(new Array(m + 1).fill(0)); }
+    for (i = n - 1; i >= 0; i--) {
+      for (var j = m - 1; j >= 0; j--) L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+    }
+    var out = [];
+    i = 0; j = 0;
+    while (i < n && j < m) {
+      if (a[i] === b[j]) { out.push([i, j]); i++; j++; } else if (L[i + 1][j] >= L[i][j + 1]) i++; else j++;
+    }
+    return out;
+  }
+  var sameList = function (a, b) { return a.length === b.length && a.every(function (x, i) { return x === b[i]; }); };
+  /** Does list contain all of sub, in order (with other lines between)? */
+  var hasAll = function (list, sub) { var j = 0; list.forEach(function (x) { if (j < sub.length && x === sub[j]) j++; }); return j === sub.length; };
+  /** list = old lines + added ones: the old lines replaced by repl (where the first old line was), the added ones kept. */
+  function swapIn(list, old, repl) {
+    var out = [], j = 0;
+    list.forEach(function (x) {
+      if (j < old.length && x === old[j]) { if (j === 0) out.push.apply(out, repl); j++; } else out.push(x);
+    });
+    return out;
+  }
+
+  /** Three-way merge of a section's words: base = what both phones started from, mine = this phone's
+      words, theirs = what's saved now. Returns the combined words. */
+  function mergeLines(base, mine, theirs) {
+    base = base == null ? '' : String(base); mine = mine == null ? '' : String(mine); theirs = theirs == null ? '' : String(theirs);
+    if (mine === theirs || theirs === base) return mine;
+    if (mine === base) return theirs;
+    var B = base.split('\n'), M = mine.split('\n'), T = theirs.split('\n');
+    var inM = {}, inT = {};
+    sameLines(B, M).forEach(function (p) { inM[p[0]] = p[1]; });
+    sameLines(B, T).forEach(function (p) { inT[p[0]] = p[1]; });
+    var out = [], i = 0, a = 0, b = 0;
+    function chunk(k, ka, kb) {   // the stretch before base line k (and mine line ka, theirs line kb)
+      var bc = B.slice(i, k), mc = M.slice(a, ka), tc = T.slice(b, kb);
+      if (sameList(mc, bc)) out.push.apply(out, tc);
+      else if (sameList(tc, bc) || sameList(mc, tc)) out.push.apply(out, mc);
+      else if (bc.length && hasAll(tc, bc)) out.push.apply(out, swapIn(tc, bc, mc));   // they only added lines: mine goes where the old lines were
+      else if (bc.length && hasAll(mc, bc)) out.push.apply(out, swapIn(mc, bc, tc));
+      else {   // both changed these lines: keep both, theirs first, without repeating lines they share
+        out.push.apply(out, tc);
+        mc.forEach(function (l) { if (tc.indexOf(l) < 0 || !l.trim()) out.push(l); });
+      }
+    }
+    for (var k = 0; k < B.length; k++) {
+      if (!(k in inM) || !(k in inT) || inM[k] < a || inT[k] < b) continue;
+      chunk(k, inM[k], inT[k]);
+      out.push(B[k]);
+      i = k + 1; a = inM[k] + 1; b = inT[k] + 1;
+    }
+    chunk(B.length, M.length, T.length);
+    return out.join('\n');
+  }
+
+  /** Rhyme letters ({ word: letter }): each side's own changes kept; where both changed one word, theirs. */
+  function mergeMap(base, mine, theirs) {
+    base = base || {}; mine = mine || {}; theirs = theirs || {};
+    var out = Object.assign({}, theirs);
+    Object.keys(Object.assign({}, base, mine)).forEach(function (k) {
+      if (mine[k] === base[k]) return;                 // not changed here
+      if (theirs[k] !== base[k] && theirs[k] !== mine[k]) return;   // changed there too: theirs
+      if (k in mine) out[k] = mine[k]; else delete out[k];
+    });
+    return out;
+  }
+
+  /** A whole section ({ tag, body, rhyme_letters }) combined: words line by line, the title as the side
+      that changed it (yours if both did), rhyme letters per word. */
+  function mergeSection(base, mine, theirs) {
+    base = base || {}; theirs = theirs || {};
+    var out = {};
+    if ('body' in mine) out.body = mergeLines(base.body, mine.body, theirs.body);
+    if ('tag' in mine) out.tag = mine.tag === base.tag ? theirs.tag : mine.tag;
+    if ('rhyme_letters' in mine) out.rhyme_letters = mergeMap(base.rhyme_letters, mine.rhyme_letters, theirs.rhyme_letters);
+    if ('repeat_of' in mine) out.repeat_of = mine.repeat_of;
+    return out;
+  }
+
+  /** Where line `at` of the old text is in the new text (keeps the cursor on its line when the other
+      phone's lines arrive above it). */
+  function mapLine(oldText, newText, at) {
+    var pairs = sameLines(oldText.split('\n'), newText.split('\n')), best = null;
+    for (var p = 0; p < pairs.length; p++) {
+      if (pairs[p][0] === at) return pairs[p][1];
+      if (pairs[p][0] < at) best = pairs[p]; else break;
+    }
+    return best ? best[1] + (at - best[0]) : at;
+  }
+
+  // Every database call gets a time limit: one stuck save (phone switching networks, screen locking)
+  // used to hold every later save back forever. Same 10 s as the rest of Setlist.
+  var CALL_MS = 10000;
+  function timed(promise) {
+    var t;
+    return Promise.race([promise, new Promise(function (ok, fail) { t = setTimeout(function () { fail(new Error('timed out')); }, CALL_MS); })])
+      .then(function (v) { clearTimeout(t); return v; }, function (e) { clearTimeout(t); throw e; });
+  }
+
   /** A store for Setlist songs. who() = the name to save as "updated by" (a Setlist member view). */
   function setlistStore(client, who) {
     var by = function () { return (who && who()) || 'Songwriter'; };
     var setOrder = function (songId, order) {
-      return Promise.all(order.map(function (id, i) { return client.from(SECTIONS).update({ position: i }).eq('id', id).then(check); }));
+      return timed(Promise.all(order.map(function (id, i) { return client.from(SECTIONS).update({ position: i }).eq('id', id).then(check); })));
     };
     return {
       kind: 'setlist',
@@ -53,20 +162,41 @@
       },
 
       load: function (songId) {
-        return Promise.all([
+        return timed(Promise.all([
           client.from(SONGS).select('id,title').eq('id', songId).single().then(check),
           client.from(SECTIONS).select('*').eq('song_id', songId).is('deleted_at', null).then(check)
-        ]).then(function (r) { return { song: Object.assign({}, r[0], { section_order: orderOf(r[1]) }), sections: r[1] }; });
+        ])).then(function (r) { return { song: Object.assign({}, r[0], { section_order: orderOf(r[1]) }), sections: r[1] }; });
       },
 
-      /** Save one section's changes ({ tag, body, repeat_of, rhyme_letters }). */
-      saveSection: function (id, songId, patch) {
-        return client.from(SECTIONS).update(Object.assign({}, patch, { updated_at: now(), updated_by: by() })).eq('id', id).select().single().then(check);
+      /** Save one section's changes ({ tag, body, repeat_of, rhyme_letters }). base = the section as this
+          phone last saw it in the database. The save only lands if nobody saved the section since
+          (same updated_at); if someone did, their version is read back, the two are combined
+          (mergeSection), and it tries again. Resolves the saved row, or { deleted: true } if the section
+          is gone (deleted on another phone: the delete wins, like everywhere in Setlist). */
+      saveSection: function (id, songId, patch, base) {
+        var tries = 0;
+        var attempt = function (p, b) {
+          var q = client.from(SECTIONS).update(Object.assign({}, p, { updated_at: now(), updated_by: by() })).eq('id', id);
+          if (b && b.updated_at) q = q.eq('updated_at', b.updated_at);
+          return timed(q.select().then(check)).then(function (rows) {
+            if (rows && rows.length) return rows[0];
+            return timed(client.from(SECTIONS).select('*').eq('id', id).then(check)).then(function (cur) {
+              cur = cur && cur[0];
+              if (!cur || cur.deleted_at) return { deleted: true };
+              if (++tries > 4) throw new Error('kept changing');
+              var mine = {};
+              Object.keys(p).forEach(function (k) { mine[k] = p[k]; });
+              ['tag', 'body', 'rhyme_letters'].forEach(function (k) { if (!(k in mine) && b && k in b) mine[k] = b[k]; });
+              return attempt(mergeSection(b, mine, cur), cur);
+            });
+          });
+        };
+        return attempt(patch, base);
       },
 
       /** Add a section where "NEW" sits in the given order, then save everyone's positions. */
       addSection: function (songId, fields, order) {
-        return client.from(SECTIONS).insert(Object.assign({ song_id: songId, position: order.indexOf('NEW'), updated_by: by() }, fields)).select().single().then(check)
+        return timed(client.from(SECTIONS).insert(Object.assign({ song_id: songId, position: order.indexOf('NEW'), updated_by: by() }, fields)).select().single().then(check))
           .then(function (sec) {
             var o = order.map(function (x) { return x === 'NEW' ? sec.id : x; });
             return setOrder(songId, o).then(function () { return { section: sec, order: o }; });
@@ -77,7 +207,7 @@
 
       /** Hide a section (or bring it back with deleted = false), then save the new order. */
       setSectionDeleted: function (id, songId, deleted, order) {
-        return client.from(SECTIONS).update({ deleted_at: deleted ? now() : null, updated_by: by() }).eq('id', id).then(check)
+        return timed(client.from(SECTIONS).update({ deleted_at: deleted ? now() : null, updated_by: by() }).eq('id', id).then(check))
           .then(function () { return setOrder(songId, order); });
       },
 
@@ -344,5 +474,6 @@
   }
 
   SW.songs = { open: open, practiceStore: practiceStore, importLyrics: importLyrics, isChordLine: isChordLine,
-    sheetText: sheetText, parseSheet: parseSheet, matchSections: matchSections };
+    sheetText: sheetText, parseSheet: parseSheet, matchSections: matchSections,
+    mergeLines: mergeLines, mergeMap: mergeMap, mergeSection: mergeSection, mapLine: mapLine };
 })(typeof window !== 'undefined' ? window : globalThis);

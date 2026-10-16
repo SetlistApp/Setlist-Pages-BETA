@@ -553,7 +553,7 @@ function nextRetryDelay(attempt) {
   const base = Math.min(RETRY_DELAY_MS * Math.pow(2, n), RETRY_MAX_DELAY_MS);
   return base + Math.floor(Math.random() * 2e3);
 }
-const APP_VERSION = "2.0.8.2";
+const APP_VERSION = "2.0.8.3-beta1";
 var _realtimeStatus = "not configured";
 function readRecoverablePatches(raw, now) {
   try {
@@ -5787,7 +5787,10 @@ function SongwriterPane({ songId, area, viewName }) {
         area: area || void 0,
         client: getSupabaseClient(),
         who: () => nameRef.current,
-        assetBase: "songwriter/"
+        assetBase: "songwriter/",
+        // Lyrics typed but not yet saved are kept on the phone under this key (2.0.8.3): one per
+        // backend, since beta and production share the phone's storage.
+        unsavedKey: storageKey("songwriter_unsavedLyrics", storageChannel())
       });
     } catch (e) {
       console.warn("Songwriter failed to start", e);
